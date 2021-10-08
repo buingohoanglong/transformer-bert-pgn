@@ -45,13 +45,12 @@ def train(model, criterion, optimizer, lr_scheduler, dataloader, dictionary, tok
             if (batch_idx + 1) % accumulation_factor == 0 or (batch_idx + 1) == num_batch:
                 # update weight
                 optimizer.step()
+                # update learning rate
+                lr_scheduler.step()
                 optimizer.zero_grad()
 
             # print train progress
             print_train_progress(epoch, batch_idx+1, num_batch, loss.detach().item() * accumulation_factor)
-
-        # update learning rate
-        lr_scheduler.step()
 
         # Save checkpoint
         save_checkpoint(model, optimizer, lr_scheduler, epoch, file_dir='./checkpoints/', file_name=f'checkpoint{epoch}.pt')
