@@ -84,7 +84,11 @@ class PointerGeneratorNetwork(nn.Module):
 
         p_gen = torch.sigmoid(
             self.context_to_pgen(context) + self.decoder_out_to_pgen(decoder_out) + self.decoder_in_to_pgen(decoder_in)
-        ) # [batch_size, tgt_seq_len, d_model]
+        ) # [batch_size, tgt_seq_len, 1]
+
+        # combine distribution
+        extend_vocab_dist = p_gen * extend_vocab_dist # [batch_size, tgt_seq_len, extend_vocab_size]
+        att_dist = (1.0 - p_gen) * att_dist # [batch_size, tgt_seq_len, src_seq_len]
 
         final_dist = extend_vocab_dist.scatter_add(
             dim=-1,
