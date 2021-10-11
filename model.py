@@ -2,7 +2,41 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+import pytorch_lightning as pl
+from NoamLRScheduler import *
+from utils import process_batch
 
+class NMT(pl.LightningModule):
+    def __init__(self, model, dictionary, tokenizer, segmenter, criterion):
+        super(NMT, self).__init__()
+        self.model = model
+        self.dictionary = dictionary
+        self.tokenizer = tokenizer
+        self.segmenter = segmenter
+        self.criterion = criterion
+
+    def training_step(self, batch, batch_idx):
+        # prepare input
+        src_batch, tgt_batch = batch
+        src, tgt, src_bert, src_ext, dictionary_ext = process_batch(
+            src_batch, tgt_batch, self.dictionary, self.tokenizer, self.segmenter, use_pgn=self.model.use_pgn
+        )
+        max_oov_len = None
+        if self.model.use_pgn:
+            max_oov_len = dictionary_ext.vocab_size - self.dictionary.vocab_size
+
+        # forward pass
+        output = self.model(src, tgt, src_bert, src_ext, max_oov_len)  # [batch_size, seq_len, vocab_size] 
+
+        # compute loss
+        loss = self.criterion(output.transpose(1,2), tgt) 
+        
+        return {'loss': loss}
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.0005, betas=(0.9, 0.98), eps=1e-9)
+        lr_scheduler = NoamLRScheduler(optimizer, warmup_steps=4000, d_model=512)
+        return {'optimizer': optimizer, 'lr_scheduler': lr_scheduler}
 
 class Transformer(nn.Module):
     def __init__(self, vocab_size, d_model, d_ff, num_heads, num_layers, dropout, bert, d_bert, padding_idx=None, use_pgn=False, unk_idx=None):

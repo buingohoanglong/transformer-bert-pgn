@@ -2,3 +2,5 @@ vncorenlp
 venv
 data/
 __pycache__
+.idea
+lightning_logs
