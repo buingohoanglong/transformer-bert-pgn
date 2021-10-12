@@ -108,11 +108,11 @@ def preprocess(segmenter, text):
     return " ".join(segments)
 
 
-def build_vocab(dictionary, file_path):
+def build_vocab(dictionary, segmenter, file_path):
     with open(file_path, 'r', encoding='utf-8') as f:
         lines = f.readlines()
         for line_tmp in lines:
-            line = preprocess(line_tmp.strip())
+            line = preprocess(segmenter, line_tmp.strip())
             tokens = dictionary.tokenize(line)
             for t in tokens:
                 dictionary.add_token(t)

@@ -7,7 +7,7 @@ from vncorenlp import VnCoreNLP
 from Dataset import *
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
-
+from pytorch_lightning.callbacks import ModelCheckpoint
 
 # def train(model, criterion, optimizer, lr_scheduler, dataloader, dictionary, tokenizer, segmenter,
 #         num_epochs=None, init_epoch=1, accumulation_factor=1, use_pgn=False):
@@ -71,14 +71,19 @@ def main():
 
     # load dictionary
     dictionary = Dictionary(tokenizer=tokenizer)
-    dictionary.add_from_file('./data/dict.vi')
+    dictionary.add_from_file('./data/vi-ba/dict.txt')
     dictionary.build_dictionary()
     print(f'--|Vocab size: {len(dictionary)}')
 
-    # load dataset, dataloader
-    dataset = NMTDataset('./data/train.vi', './data/train.en')
-    print(f'--|Number of samples: {len(dataset)}')
-    dataloader = DataLoader(dataset=dataset, batch_size=1, num_workers=4)
+    # load train_dataset, train_loader
+    train_dataset = NMTDataset('./data/vi-ba/train_dev.vi', './data/vi-ba/train_dev.ba')
+    print(f'--|Number of train samples: {len(train_dataset)}')
+    train_loader = DataLoader(dataset=train_dataset, batch_size=1, num_workers=4)
+
+    # load val_dataset, val_loader
+    val_dataset = NMTDataset('./data/vi-ba/valid_dev.vi', './data/vi-ba/valid_dev.ba')
+    print(f'--|Number of valid samples: {len(val_dataset)}')
+    val_loader = DataLoader(dataset=val_dataset, batch_size=1, num_workers=4)
 
     # init criterion
     criterion = nn.CrossEntropyLoss()
@@ -97,7 +102,7 @@ def main():
         use_pgn=True,
         unk_idx=dictionary.token_to_index(dictionary.unk_token)
     )
-    print(model)
+    # print(model)
     
     task = NMT(
         model=model, 
@@ -107,11 +112,29 @@ def main():
         criterion=criterion
     )
 
+    # checkpoint callback
+    checkpoint_callback = ModelCheckpoint(
+        monitor='val_loss',
+        dirpath='./checkpoints/',
+        filename='checkpoint-{epoch:02d}-{val_loss:.2f}',
+        save_top_k=3,
+        mode='min',
+    )
+
     # init trainer
-    trainer = pl.Trainer(accumulate_grad_batches=256, fast_dev_run=False)
+    # trainer = pl.Trainer(
+    #     accumulate_grad_batches=5, 
+    #     gpus=1 if torch.cuda.is_available() else 0,
+    #     log_every_n_steps=1,
+    #     callbacks=[checkpoint_callback]
+    # )
+    trainer = pl.Trainer(
+        resume_from_checkpoint="./checkpoints/checkpoint-epoch=06-val_loss=8.61.ckpt",
+        callbacks=[checkpoint_callback]
+    )
 
     # train
-    trainer.fit(model=task, train_dataloaders=dataloader)
+    trainer.fit(model=task, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
     
 if __name__ == '__main__':

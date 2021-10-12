@@ -21,6 +21,10 @@ class NMT(pl.LightningModule):
         src, tgt, src_bert, src_ext, dictionary_ext = process_batch(
             src_batch, tgt_batch, self.dictionary, self.tokenizer, self.segmenter, use_pgn=self.model.use_pgn
         )
+        src = src.to(self.device)
+        tgt = tgt.to(self.device)
+        src_bert = src_bert.to(self.device)
+        src_ext = src_ext.to(self.device)
         max_oov_len = None
         if self.model.use_pgn:
             max_oov_len = dictionary_ext.vocab_size - self.dictionary.vocab_size
@@ -31,12 +35,50 @@ class NMT(pl.LightningModule):
         # compute loss
         loss = self.criterion(output.transpose(1,2), tgt) 
         
+        # log
+        if batch_idx % self.trainer.accumulate_grad_batches == 0:
+            should_log = (
+                (self.global_step + 1) % self.trainer.log_every_n_steps == 0
+            )
+            if should_log:
+                self.log("train_loss", loss, prog_bar=True, logger=True)
+        
         return {'loss': loss}
+
+    def validation_step(self, batch, batch_idx):
+        # prepare input
+        src_batch, tgt_batch = batch
+        src, tgt, src_bert, src_ext, dictionary_ext = process_batch(
+            src_batch, tgt_batch, self.dictionary, self.tokenizer, self.segmenter, use_pgn=self.model.use_pgn
+        )
+        src = src.to(self.device)
+        tgt = tgt.to(self.device)
+        src_bert = src_bert.to(self.device)
+        src_ext = src_ext.to(self.device)
+        max_oov_len = None
+        if self.model.use_pgn:
+            max_oov_len = dictionary_ext.vocab_size - self.dictionary.vocab_size
+
+        # forward pass
+        output = self.model(src, tgt, src_bert, src_ext, max_oov_len)  # [batch_size, seq_len, vocab_size] 
+
+        # compute loss
+        loss = self.criterion(output.transpose(1,2), tgt) 
+
+        return {'loss': loss}
+
+    def validation_epoch_end(self, outputs):
+        avg_val_loss = torch.tensor([x['loss'] for x in outputs]).mean()
+        self.log('val_loss', avg_val_loss, prog_bar=True, logger=True)
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.model.parameters(), lr=0.0005, betas=(0.9, 0.98), eps=1e-9)
         lr_scheduler = NoamLRScheduler(optimizer, warmup_steps=4000, d_model=512)
-        return {'optimizer': optimizer, 'lr_scheduler': lr_scheduler}
+        lr_scheduler_config = {
+            'scheduler': lr_scheduler,
+            'interval': 'step'
+        }
+        return {'optimizer': optimizer, 'lr_scheduler': lr_scheduler_config}
 
 class Transformer(nn.Module):
     def __init__(self, vocab_size, d_model, d_ff, num_heads, num_layers, dropout, bert, d_bert, padding_idx=None, use_pgn=False, unk_idx=None):
@@ -113,7 +155,7 @@ class PointerGeneratorNetwork(nn.Module):
         ) # [batch_size, tgt_seq_len, d_model], [batch_size, tgt_seq_len, src_seq_len]
 
         vocab_dist = F.softmax(self.vocab_projection(decoder_out), dim=-1) # [batch_size, tgt_seq_len, vocab_size]
-        extra_zeros = torch.zeros(vocab_dist.size(0), vocab_dist.size(1), max_oov_len).to(vocab_dist.device) # [batch_size, tgt_seq_len, max_oov_len]
+        extra_zeros = torch.zeros(vocab_dist.size(0), vocab_dist.size(1), max_oov_len, device=vocab_dist.device) # [batch_size, tgt_seq_len, max_oov_len]
         extend_vocab_dist = torch.cat([vocab_dist, extra_zeros], dim=-1) # [batch_size, tgt_seq_len, extend_vocab_size], extend_vocab_size = vocab_size + max_oov_len
 
         p_gen = torch.sigmoid(
@@ -287,7 +329,7 @@ class MultiHeadAttention(nn.Module):
         """
         attention_mask = None
         if self.masking:
-            attention_mask = torch.ones(Q.size(0), Q.size(1), K.size(1)).triu(diagonal=1).type(torch.bool).to(Q.device) # [batch_size, Q_seq_length, K_seq_length]
+            attention_mask = torch.ones(Q.size(0), Q.size(1), K.size(1), device=Q.device).triu(diagonal=1).type(torch.bool) # [batch_size, Q_seq_length, K_seq_length]
         concat_heads = torch.cat([
             h(Q, K, V, attention_mask=attention_mask, padding_mask=padding_mask)[0]
             for h in self.heads
@@ -369,7 +411,7 @@ class PositionalEncoding(nn.Module):
         self.d_model = d_model
     
     def get_angles(self, positions, indexes):
-        d_model_tensor = torch.FloatTensor([[self.d_model]]).to(positions.device)
+        d_model_tensor = torch.tensor([[self.d_model]], dtype=torch.float32, device=positions.device)
         angle_rates = torch.pow(10000, (2 * (indexes // 2)) / d_model_tensor)
         return positions / angle_rates
 
@@ -378,8 +420,8 @@ class PositionalEncoding(nn.Module):
         :param mandatory Tensor[batch_size, seq_len] x
         :return Tensor[batch_size, seq_len, d_model]
         """
-        positions = torch.arange(x.size(1)).unsqueeze(1).to(x.device) # [seq_len, 1]
-        indexes = torch.arange(self.d_model).unsqueeze(0).to(x.device) # [1, d_model]
+        positions = torch.arange(x.size(1), device=x.device).unsqueeze(1) # [seq_len, 1]
+        indexes = torch.arange(self.d_model, device=x.device).unsqueeze(0) # [1, d_model]
         angles = self.get_angles(positions, indexes) # [seq_len, d_model]
         angles[:, 0::2] = torch.sin(angles[:, 0::2]) # apply sin to even indices in the tensor; 2i
         angles[:, 1::2] = torch.cos(angles[:, 1::2]) # apply cos to odd indices in the tensor; 2i
