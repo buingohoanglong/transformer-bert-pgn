@@ -374,7 +374,7 @@ class Attention(nn.Module):
             # do not attend to padding symbols
             attention_weight.masked_fill_(padding_mask, float("-Inf")) # repalce masked position by -inf
         if special_token_mask is not None:
-            attention_weight.masked_fill_(special_token_mask, float("-Inf")) # repalce masked position by -inf
+            attention_weight.masked_fill_(~special_token_mask, float("-Inf")) # repalce masked position by -inf
         score = F.softmax(attention_weight, dim=-1) # [batch_size, Q_seq_length, K_seq_length]
         score = self.dropout(score)
         return self.linear(score.bmm(value)), score # [batch_size, Q_seq_length, d_v], [batch_size, Q_seq_length, K_seq_length]
