@@ -5,6 +5,7 @@ import math
 import pytorch_lightning as pl
 from NoamLRScheduler import *
 from utils import process_batch
+from numpy.random import  uniform
 
 class NMT(pl.LightningModule):
     def __init__(self, model, dictionary, tokenizer, segmenter, criterion):
@@ -214,7 +215,8 @@ class Decoder(nn.Module):
 
 
 class EncoderLayer(nn.Module):
-    def __init__(self, d_model, d_ff, num_heads, dropout, d_bert):
+    def __init__(self, d_model, d_ff, num_heads, dropout, d_bert, 
+        encoder_bert_dropout=True, encoder_bert_mixup=False, encoder_bert_dropout_ratio=0.5):
         """
         :param mandatory int d_model
         :param mandatory int d_ff
@@ -228,6 +230,11 @@ class EncoderLayer(nn.Module):
         self.attention_residual = Residual(d_model=d_model,dropout=dropout)
         self.feed_forward = FeedForward(d_model=d_model, d_ff=d_ff)
         self.feed_forward_residual = Residual(d_model=d_model,dropout=dropout)
+        
+        self.encoder_bert_dropout = encoder_bert_dropout
+        self.encoder_bert_mixup = encoder_bert_mixup
+        self.encoder_bert_dropout_ratio = encoder_bert_dropout_ratio
+        assert self.encoder_bert_dropout_ratio >= 0. and self.encoder_bert_dropout_ratio <= 0.5
 
 
     def forward(self, x, bert_embedding, padding_mask=None):
@@ -249,7 +256,18 @@ class EncoderLayer(nn.Module):
         )
 
     def get_ratios(self):
-        return [0.5, 0.5]
+        if self.encoder_bert_dropout:
+            frand = float(uniform(0, 1))
+            if self.encoder_bert_mixup and self.training:
+                return [frand, 1 - frand]
+            if frand < self.encoder_bert_dropout_ratio and self.training:
+                return [1, 0]
+            elif frand > 1 - self.encoder_bert_dropout_ratio and self.training:
+                return [0, 1]
+            else:
+                return [0.5, 0.5]
+        else:
+            return [0.5, 0.5]
 
 
 class DecoderLayer(nn.Module):
@@ -316,7 +334,8 @@ class MultiHeadAttention(nn.Module):
         super(MultiHeadAttention, self).__init__()
         self.masking = masking
         self.heads = nn.ModuleList([
-        Attention(d_Q_in=d_Q_in, d_K_in=d_K_in, d_V_in=d_V_in, d_k=d_k, d_v=d_v, dropout=dropout) for _ in range(num_heads)
+            Attention(d_Q_in=d_Q_in, d_K_in=d_K_in, d_V_in=d_V_in, d_k=d_k, d_v=d_v, dropout=dropout) 
+            for _ in range(num_heads)
         ])
         self.linear = nn.Linear(num_heads * d_v, d_Q_in)
 
