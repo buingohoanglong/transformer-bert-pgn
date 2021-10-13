@@ -271,7 +271,8 @@ class EncoderLayer(nn.Module):
 
 
 class DecoderLayer(nn.Module):
-    def __init__(self, d_model, d_ff, num_heads, dropout, d_bert):
+    def __init__(self, d_model, d_ff, num_heads, dropout, d_bert,
+        decoder_bert_dropout=True, decoder_bert_mixup=False, decoder_bert_dropout_ratio=0.5):
         """
         :param mandatory int d_model
         :param mandatory int d_ff
@@ -287,6 +288,11 @@ class DecoderLayer(nn.Module):
         self.bertfused_attention_residual = Residual(d_model=d_model,dropout=dropout)
         self.feed_forward = FeedForward(d_model=d_model, d_ff=d_ff)
         self.feed_forward_residual = Residual(d_model=d_model,dropout=dropout)
+
+        self.decoder_bert_dropout = decoder_bert_dropout
+        self.decoder_bert_mixup = decoder_bert_mixup
+        self.decoder_bert_dropout_ratio = decoder_bert_dropout_ratio
+        assert self.decoder_bert_dropout_ratio >= 0. and self.decoder_bert_dropout_ratio <= 0.5
 
     def forward(self, x, encoder_out, bert_embedding, src_padding_mask=None, tgt_padding_mask=None):
         """
@@ -318,7 +324,18 @@ class DecoderLayer(nn.Module):
         )
     
     def get_ratios(self):
-        return [0.5, 0.5]
+        if self.decoder_bert_dropout:
+            frand = float(uniform(0, 1))
+            if self.decoder_bert_mixup and self.training:
+                return [frand, 1 - frand]
+            if frand < self.decoder_bert_dropout_ratio and self.training:
+                return [1, 0]
+            elif frand > 1 - self.decoder_bert_dropout_ratio and self.training:
+                return [0, 1]
+            else:
+                return [0.5, 0.5]
+        else:
+            return [0.5, 0.5]
 
 
 class MultiHeadAttention(nn.Module):
@@ -388,13 +405,14 @@ class Attention(nn.Module):
         scale = query.size(-1) ** 0.5 # scalar
         attention_weight = query.bmm(key.transpose(1,2)) / scale # [batch_size, Q_seq_length, K_seq_length]
         if attention_mask is not None:
-            attention_weight.masked_fill_(attention_mask, float("-Inf")) # repalce masked position by -inf
+            attention_weight = attention_weight.masked_fill(attention_mask, float("-Inf")) # repalce masked position by -inf
         if padding_mask is not None:
             # do not attend to padding symbols
-            attention_weight.masked_fill_(padding_mask, float("-Inf")) # repalce masked position by -inf
+            attention_weight = attention_weight.masked_fill(padding_mask, float("-Inf")) # repalce masked position by -inf
         if special_token_mask is not None:
-            attention_weight.masked_fill_(~special_token_mask, float("-Inf")) # repalce masked position by -inf
+            attention_weight = attention_weight.masked_fill(~special_token_mask, float("-Inf")) # repalce masked position by -inf
         score = F.softmax(attention_weight, dim=-1) # [batch_size, Q_seq_length, K_seq_length]
+        score = score.nan_to_num()
         score = self.dropout(score)
         return self.linear(score.bmm(value)), score # [batch_size, Q_seq_length, d_v], [batch_size, Q_seq_length, K_seq_length]
 
