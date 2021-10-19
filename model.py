@@ -6,34 +6,39 @@ import pytorch_lightning as pl
 from NoamLRScheduler import *
 from utils import process_batch
 from numpy.random import  uniform
+import re
 
 class NMT(pl.LightningModule):
-    def __init__(self, model, dictionary, tokenizer, segmenter, criterion):
+    def __init__(self, dictionary, tokenizer, segmenter, criterion, d_model, d_ff, num_heads, num_layers, dropout, bert, d_bert, use_pgn=False, max_src_len=256, max_tgt_len=256):
         super(NMT, self).__init__()
-        self.model = model
         self.dictionary = dictionary
         self.tokenizer = tokenizer
         self.segmenter = segmenter
         self.criterion = criterion
+        self.model = Transformer(
+            vocab_size=len(self.dictionary), 
+            d_model=d_model,
+            d_ff=d_ff, 
+            num_heads=num_heads,
+            num_layers=num_layers,
+            dropout=dropout,
+            bert=bert,
+            d_bert=d_bert, 
+            padding_idx=self.dictionary.token_to_index(self.dictionary.pad_token), 
+            use_pgn=use_pgn, 
+            unk_idx=self.dictionary.token_to_index(self.dictionary.unk_token)
+        )
+        self.max_src_len = max_src_len
+        self.max_tgt_len = max_tgt_len
 
     def training_step(self, batch, batch_idx):
-        # prepare input
-        src_batch, tgt_batch = batch
-        src, tgt, src_bert, src_ext, dictionary_ext = process_batch(
-            src_batch, tgt_batch, self.dictionary, self.tokenizer, self.segmenter, use_pgn=self.model.use_pgn
-        )
-        src = src.to(self.device)
-        tgt = tgt.to(self.device)
-        src_bert = src_bert.to(self.device)
-        src_ext = src_ext.to(self.device)
-        max_oov_len = None
-        if self.model.use_pgn:
-            max_oov_len = dictionary_ext.vocab_size - self.dictionary.vocab_size
+        input = self._prepare_input(batch, batch_idx)
 
-        # forward pass
-        output = self.model(src, tgt, src_bert, src_ext, max_oov_len)  # [batch_size, seq_len, vocab_size] 
+        output = self.model(
+            input['src'], input['tgt'], input['src_bert'], input['src_ext'], input['max_oov_len']
+        )  # [batch_size, seq_len, vocab_size] 
 
-        # compute loss
+        tgt = input['tgt_ext'] if self.model.use_pgn else input['tgt']
         loss = self.criterion(output.transpose(1,2), tgt) 
         
         # log
@@ -47,23 +52,13 @@ class NMT(pl.LightningModule):
         return {'loss': loss}
 
     def validation_step(self, batch, batch_idx):
-        # prepare input
-        src_batch, tgt_batch = batch
-        src, tgt, src_bert, src_ext, dictionary_ext = process_batch(
-            src_batch, tgt_batch, self.dictionary, self.tokenizer, self.segmenter, use_pgn=self.model.use_pgn
-        )
-        src = src.to(self.device)
-        tgt = tgt.to(self.device)
-        src_bert = src_bert.to(self.device)
-        src_ext = src_ext.to(self.device)
-        max_oov_len = None
-        if self.model.use_pgn:
-            max_oov_len = dictionary_ext.vocab_size - self.dictionary.vocab_size
+        input = self._prepare_input(batch, batch_idx)
+        
+        output = self.model(
+            input['src'], input['tgt'], input['src_bert'], input['src_ext'], input['max_oov_len']
+        )  # [batch_size, seq_len, vocab_size] 
 
-        # forward pass
-        output = self.model(src, tgt, src_bert, src_ext, max_oov_len)  # [batch_size, seq_len, vocab_size] 
-
-        # compute loss
+        tgt = input['tgt_ext'] if self.model.use_pgn else input['tgt']
         loss = self.criterion(output.transpose(1,2), tgt) 
 
         return {'loss': loss}
@@ -71,6 +66,37 @@ class NMT(pl.LightningModule):
     def validation_epoch_end(self, outputs):
         avg_val_loss = torch.tensor([x['loss'] for x in outputs]).mean()
         self.log('val_loss', avg_val_loss, prog_bar=True, logger=True)
+
+    def test_step(self, batch, batch_idx):
+        input = self._prepare_input(batch, batch_idx)
+
+        # forward pass
+        preds = torch.tensor([0], device=self.device).repeat(input['src'].size(0), 1) # [batch_size, current_len]
+        for _ in range(self.max_tgt_len - 1):
+            output = self(input['src'], preds, input['src_bert'], input['src_ext'], input['max_oov_len'])  # [batch_size, seq_len, vocab_size]
+            values, ids = torch.max(output, dim=-1)
+            preds = torch.cat([preds,ids[:,-1].unsqueeze(1)],dim=-1)
+
+        # decode
+        preds = preds.tolist()
+        sequences = []
+        for seq_ids in preds:
+            tokens = [input['dictionary_ext'].index_to_token(i) for i in seq_ids]
+            seq = self.tokenizer.convert_tokens_to_string(tokens)
+            sequences.append(self._postprocess(seq))
+
+        # print results
+        batch_size = self.trainer.test_dataloaders[0].batch_size
+        for offset in range(len(input['src_raw'])):
+            print(f'--|S-{batch_idx*batch_size + offset}: {input["src_raw"][offset]}')
+            print(f'--|T-{batch_idx*batch_size + offset}: {input["tgt_raw"][offset]}')
+            print(f'--|P-{batch_idx*batch_size + offset}: {sequences[offset]}')
+            print()
+
+        #TODO calculate bleu
+
+    def test_epoch_end(self, outputs) -> None:
+        pass
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.model.parameters(), lr=0.0005, betas=(0.9, 0.98), eps=1e-9)
@@ -80,6 +106,45 @@ class NMT(pl.LightningModule):
             'interval': 'step'
         }
         return {'optimizer': optimizer, 'lr_scheduler': lr_scheduler_config}
+
+    def _prepare_input(self, batch, batch_idx):
+        src_batch, tgt_batch = batch
+        src, tgt, src_bert, src_ext, tgt_ext, dictionary_ext = process_batch(
+            src_batch, tgt_batch, self.dictionary, self.tokenizer, self.segmenter, 
+            max_src_len=self.max_src_len, use_pgn=self.model.use_pgn
+        )
+        src = src.to(self.device)
+        tgt = tgt.to(self.device)
+        src_bert = src_bert.to(self.device)
+        if self.model.use_pgn:
+            src_ext = src_ext.to(self.device)
+            tgt_ext = tgt_ext.to(self.device)
+        max_oov_len = None
+        if self.model.use_pgn:
+            max_oov_len = dictionary_ext.vocab_size - self.dictionary.vocab_size
+
+        return {
+            'src_raw': src_batch,
+            'tgt_raw': tgt_batch,
+            'src': src,
+            'tgt': tgt,
+            'src_bert': src_bert,
+            'src_ext': src_ext,
+            'tgt_ext': tgt_ext,
+            'dictionary_ext': dictionary_ext,
+            'max_oov_len': max_oov_len
+        }
+
+    def _postprocess(self, seq):
+        eos_idx = seq.find(self.dictionary.eos_token)
+        if eos_idx != -1:
+            seq = seq[:eos_idx]
+        seq = re.sub(f"^{self.dictionary.bos_token}| {self.dictionary.bos_token}", "", seq)
+        seq = re.sub(f"^{self.dictionary.pad_token}| {self.dictionary.pad_token}", "", seq)
+        seq = re.sub(f"^{self.dictionary.unk_token}| {self.dictionary.unk_token}", "", seq)
+        seq = re.sub(f"_", " ", seq)
+        return seq.strip()
+
 
 class Transformer(nn.Module):
     def __init__(self, vocab_size, d_model, d_ff, num_heads, num_layers, dropout, bert, d_bert, padding_idx=None, use_pgn=False, unk_idx=None):
@@ -283,8 +348,8 @@ class DecoderLayer(nn.Module):
         assert d_k * num_heads == d_model and d_v * num_heads == d_model
         self.self_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_model, d_V_in=d_model, d_k=d_k, d_v=d_v, dropout=dropout, masking=True)
         self.self_attention_residual = Residual(d_model=d_model,dropout=dropout)
-        self.encoder_decoder_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_model, d_V_in=d_model, d_k=d_k, d_v=d_v, dropout=dropout, masking=True)
-        self.bert_dec_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_bert, d_V_in=d_bert, d_k=d_k, d_v=d_v, dropout=dropout, masking=True) 
+        self.encoder_decoder_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_model, d_V_in=d_model, d_k=d_k, d_v=d_v, dropout=dropout)
+        self.bert_dec_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_bert, d_V_in=d_bert, d_k=d_k, d_v=d_v, dropout=dropout) 
         self.bertfused_attention_residual = Residual(d_model=d_model,dropout=dropout)
         self.feed_forward = FeedForward(d_model=d_model, d_ff=d_ff)
         self.feed_forward_residual = Residual(d_model=d_model,dropout=dropout)
