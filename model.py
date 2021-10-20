@@ -7,6 +7,7 @@ from NoamLRScheduler import *
 from utils import process_batch
 from numpy.random import  uniform
 import re
+from nltk.translate.bleu_score import corpus_bleu
 
 class NMT(pl.LightningModule):
     def __init__(self, dictionary, tokenizer, segmenter, criterion, d_model, d_ff, num_heads, num_layers, dropout, bert, d_bert, use_pgn=False, max_src_len=256, max_tgt_len=256):
@@ -73,9 +74,15 @@ class NMT(pl.LightningModule):
         # forward pass
         preds = torch.tensor([0], device=self.device).repeat(input['src'].size(0), 1) # [batch_size, current_len]
         for _ in range(self.max_tgt_len - 1):
-            output = self(input['src'], preds, input['src_bert'], input['src_ext'], input['max_oov_len'])  # [batch_size, seq_len, vocab_size]
+            output = self.model(input['src'], preds, input['src_bert'], input['src_ext'], input['max_oov_len'])  # [batch_size, seq_len, vocab_size]
             values, ids = torch.max(output, dim=-1)
             preds = torch.cat([preds,ids[:,-1].unsqueeze(1)],dim=-1)
+            # map oov to unk before feed to next timestep
+            preds = torch.where(
+                preds < len(self.dictionary), 
+                preds, 
+                self.dictionary.token_to_index(self.dictionary.unk_token)
+            )
 
         # decode
         preds = preds.tolist()
@@ -93,13 +100,18 @@ class NMT(pl.LightningModule):
             print(f'--|P-{batch_idx*batch_size + offset}: {sequences[offset]}')
             print()
 
-        #TODO calculate bleu
+        # compute bleu
+        candidates = [seq.strip().split() for seq in sequences]
+        references = [[ref.strip().split()] for ref in input['tgt_raw']]
+        bleu = corpus_bleu(references, candidates)
+        return {"bleu": bleu}
 
-    def test_epoch_end(self, outputs) -> None:
-        pass
+    def test_epoch_end(self, outputs):
+        avg_bleu = torch.tensor([x['bleu'] for x in outputs]).mean()
+        self.log('bleu', avg_bleu, prog_bar=True, logger=True)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.0005, betas=(0.9, 0.98), eps=1e-9)
+        optimizer = torch.optim.Adam(self.parameters(), lr=0.0005, betas=(0.9, 0.98), eps=1e-9)
         lr_scheduler = NoamLRScheduler(optimizer, warmup_steps=4000, d_model=512)
         lr_scheduler_config = {
             'scheduler': lr_scheduler,

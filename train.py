@@ -80,10 +80,10 @@ def main():
     )
     # trainer = pl.Trainer(
     #     resume_from_checkpoint="./checkpoints/last.ckpt",
-    #     accumulate_grad_batches=5, 
+    #     accumulate_grad_batches=64,
     #     gpus=1 if torch.cuda.is_available() else 0,
     #     log_every_n_steps=1,
-    #     callbacks=[checkpoint_callback],
+    #     callbacks=[checkpoint_callback, lr_monitor],
     #     logger=logger
     # )
 
