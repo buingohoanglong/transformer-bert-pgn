@@ -36,11 +36,11 @@ class NMT(pl.LightningModule):
         input = self._prepare_input(batch, batch_idx)
 
         output = self.model(
-            input['src'], input['tgt'], input['src_bert'], input['src_ext'], input['max_oov_len']
+            input['src'], input['tgt'][:,:-1], input['src_bert'], input['src_ext'], input['max_oov_len']
         )  # [batch_size, seq_len, vocab_size] 
 
         tgt = input['tgt_ext'] if self.model.use_pgn else input['tgt']
-        loss = self.criterion(output.transpose(1,2), tgt) 
+        loss = self.criterion(output.transpose(1,2), tgt[:,1:]) 
         
         # log
         if batch_idx % self.trainer.accumulate_grad_batches == 0:
@@ -56,11 +56,11 @@ class NMT(pl.LightningModule):
         input = self._prepare_input(batch, batch_idx)
         
         output = self.model(
-            input['src'], input['tgt'], input['src_bert'], input['src_ext'], input['max_oov_len']
+            input['src'], input['tgt'][:,:-1], input['src_bert'], input['src_ext'], input['max_oov_len']
         )  # [batch_size, seq_len, vocab_size] 
 
         tgt = input['tgt_ext'] if self.model.use_pgn else input['tgt']
-        loss = self.criterion(output.transpose(1,2), tgt) 
+        loss = self.criterion(output.transpose(1,2), tgt[:,1:]) 
 
         return {'loss': loss}
 
