@@ -88,8 +88,9 @@ class NMT(pl.LightningModule):
         # decode
         preds = preds.tolist()
         sequences = []
+        decode_dict = input['dictionary_ext'] if self.model.use_pgn else self.dictionary
         for seq_ids in preds:
-            tokens = [input['dictionary_ext'].index_to_token(i) for i in seq_ids]
+            tokens = [decode_dict.index_to_token(i) for i in seq_ids]
             seq = self.tokenizer.convert_tokens_to_string(tokens)
             sequences.append(self._postprocess(seq))
 
