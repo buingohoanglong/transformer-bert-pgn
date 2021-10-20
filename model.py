@@ -73,12 +73,13 @@ class NMT(pl.LightningModule):
 
         # forward pass
         preds = torch.tensor([0], device=self.device).repeat(input['src'].size(0), 1) # [batch_size, current_len]
+        prev = preds.detach().clone()
         for _ in range(self.max_tgt_len - 1):
-            output = self.model(input['src'], preds, input['src_bert'], input['src_ext'], input['max_oov_len'])  # [batch_size, seq_len, vocab_size]
+            output = self.model(input['src'], prev, input['src_bert'], input['src_ext'], input['max_oov_len'])  # [batch_size, seq_len, vocab_size]
             values, ids = torch.max(output, dim=-1)
             preds = torch.cat([preds,ids[:,-1].unsqueeze(1)],dim=-1)
             # map oov to unk before feed to next timestep
-            preds = torch.where(
+            prev = torch.where(
                 preds < len(self.dictionary), 
                 preds, 
                 self.dictionary.token_to_index(self.dictionary.unk_token)
@@ -107,7 +108,7 @@ class NMT(pl.LightningModule):
         return {"bleu": bleu}
 
     def test_epoch_end(self, outputs):
-        avg_bleu = torch.tensor([x['bleu'] for x in outputs]).mean()
+        avg_bleu = torch.tensor([x['bleu'] for x in outputs], dtype=torch.float32).mean()
         self.log('bleu', avg_bleu, prog_bar=True, logger=True)
 
     def configure_optimizers(self):
@@ -157,15 +158,14 @@ class NMT(pl.LightningModule):
         seq = re.sub(f"_", " ", seq)
         return seq.strip()
 
-
 class Transformer(nn.Module):
     def __init__(self, vocab_size, d_model, d_ff, num_heads, num_layers, dropout, bert, d_bert, padding_idx=None, use_pgn=False, unk_idx=None):
         super(Transformer, self).__init__()
-        self.src_embedding = Embedding(vocab_size=vocab_size, d_model=d_model, dropout=dropout)
-        self.tgt_embedding = Embedding(vocab_size=vocab_size, d_model=d_model, dropout=dropout)
+        self.src_embedding = Embedding(vocab_size=vocab_size, d_model=d_model, dropout=dropout, padding_idx=padding_idx)
+        self.tgt_embedding = Embedding(vocab_size=vocab_size, d_model=d_model, dropout=dropout, padding_idx=padding_idx)
         self.encoder = Encoder(d_model=d_model, d_ff=d_ff, num_heads=num_heads, num_layers=num_layers, dropout=dropout, d_bert=d_bert)
         self.decoder = Decoder(d_model=d_model, d_ff=d_ff, num_heads=num_heads, num_layers=num_layers, dropout=dropout, d_bert=d_bert)
-        self.linear = nn.Linear(d_model, vocab_size)
+        self.linear = Linear(d_model, vocab_size)
         self.bert = bert
         self.padding_idx = padding_idx
         self.use_pgn = use_pgn
@@ -214,10 +214,10 @@ class PointerGeneratorNetwork(nn.Module):
     def __init__(self, d_model, dropout, vocab_size):
         super(PointerGeneratorNetwork, self).__init__()
         self.encoder_decoder_attention = Attention(d_Q_in=d_model, d_K_in=d_model, d_V_in=d_model, d_k=d_model, d_v=d_model, dropout=dropout)
-        self.vocab_projection = nn.Linear(d_model, vocab_size)
-        self.context_to_pgen = nn.Linear(d_model, 1)
-        self.decoder_out_to_pgen = nn.Linear(d_model, 1)
-        self.decoder_in_to_pgen = nn.Linear(d_model, 1)
+        self.vocab_projection = Linear(d_model, vocab_size)
+        self.context_to_pgen = Linear(d_model, 1)
+        self.decoder_out_to_pgen = Linear(d_model, 1)
+        self.decoder_in_to_pgen = Linear(d_model, 1)
 
     def forward(self, encoder_out, decoder_out, decoder_in, src_ext, max_oov_len, padding_mask=None, special_token_mask=None):
         """
@@ -431,7 +431,7 @@ class MultiHeadAttention(nn.Module):
             Attention(d_Q_in=d_Q_in, d_K_in=d_K_in, d_V_in=d_V_in, d_k=d_k, d_v=d_v, dropout=dropout) 
             for _ in range(num_heads)
         ])
-        self.linear = nn.Linear(num_heads * d_v, d_Q_in)
+        self.linear = Linear(num_heads * d_v, d_Q_in)
 
     def forward(self, Q, K, V, padding_mask=None):
         """
@@ -460,11 +460,11 @@ class Attention(nn.Module):
         :param mandatory int d_v
         """
         super(Attention, self).__init__()
-        self.q = nn.Linear(d_Q_in, d_k)
-        self.k = nn.Linear(d_K_in, d_k)
-        self.v = nn.Linear(d_V_in, d_v)
+        self.q = Linear(d_Q_in, d_k)
+        self.k = Linear(d_K_in, d_k)
+        self.v = Linear(d_V_in, d_v)
         self.dropout = nn.Dropout(dropout)
-        self.linear = nn.Linear(d_v, d_v)
+        self.linear = Linear(d_v, d_v)
 
     def forward(self, Q, K, V, attention_mask=None, padding_mask=None, special_token_mask=None):
         """
@@ -495,7 +495,7 @@ class Attention(nn.Module):
 
 
 class Embedding(nn.Module):
-    def __init__(self, vocab_size, d_model, dropout):
+    def __init__(self, vocab_size, d_model, dropout, padding_idx):
         """
         :param madatory int vocab_size
         :param madatory int d_model
@@ -505,6 +505,9 @@ class Embedding(nn.Module):
         self.embedding_scale = math.sqrt(d_model)
         self.positional_encoding = PositionalEncoding(d_model=d_model)
         self.dropout = nn.Dropout(dropout)
+        self.padding_idx = padding_idx
+
+        self._init_weights()
 
 
     def forward(self, x):
@@ -513,6 +516,10 @@ class Embedding(nn.Module):
         :return Tensor[batch_size, seq_length, d_model]
         """
         return self.dropout(self.embedding(x)*self.embedding_scale + self.positional_encoding(x))
+
+    def _init_weights(self):
+        nn.init.normal_(self.embedding.weight, mean=0, std=self.embedding.embedding_dim ** -0.5)
+        nn.init.constant_(self.embedding.weight[self.padding_idx], 0)
 
 
 
@@ -551,8 +558,8 @@ class FeedForward(nn.Module):
         :param mandatory int d_ff
         """
         super(FeedForward, self).__init__()
-        self.first_linear = nn.Linear(d_model, d_ff)
-        self.second_linear = nn.Linear(d_ff, d_model)
+        self.first_linear = Linear(d_model, d_ff)
+        self.second_linear = Linear(d_ff, d_model)
 
     def forward(self, x):
         """
@@ -579,3 +586,15 @@ class Residual(nn.Module):
         :return Tensor[batch_size, seq_len, d_model] position_encoding
         """
         return self.layer_norm(self.dropout(x) + x_non_dropout)
+
+class Linear(nn.Module):
+    def __init__(self, in_features, out_features, bias=True, device=None, dtype=None):
+        super(Linear, self).__init__()
+        self.linear = nn.Linear(in_features=in_features, out_features=out_features, bias=bias, device=device, dtype=dtype)
+        self._init_weights()
+
+    def forward(self, x):
+        return self.linear(x)
+
+    def _init_weights(self):
+        nn.init.xavier_uniform_(self.linear.weight)
