@@ -40,7 +40,7 @@ class NMT(pl.LightningModule):
         )  # [batch_size, seq_len, vocab_size] 
 
         tgt = input['tgt_ext'] if self.model.use_pgn else input['tgt']
-        loss = self.criterion(output.transpose(1,2), tgt[:,1:]) 
+        loss = self.criterion(output, tgt[:,1:]) 
         
         # log
         if batch_idx % self.trainer.accumulate_grad_batches == 0:
@@ -60,7 +60,7 @@ class NMT(pl.LightningModule):
         )  # [batch_size, seq_len, vocab_size] 
 
         tgt = input['tgt_ext'] if self.model.use_pgn else input['tgt']
-        loss = self.criterion(output.transpose(1,2), tgt[:,1:]) 
+        loss = self.criterion(output, tgt[:,1:]) 
 
         return {'loss': loss}
 
@@ -171,13 +171,14 @@ class Transformer(nn.Module):
         self.padding_idx = padding_idx
         self.use_pgn = use_pgn
         self.unk_idx = unk_idx
-        self.pointer_generator = PointerGeneratorNetwork(d_model=d_model, dropout=dropout, vocab_size=vocab_size)
+        self.pointer_generator = PointerGeneratorNetwork(d_model=d_model, dropout=dropout)
 
     def forward(self, src, tgt, src_bert, src_ext, max_oov_len):
         """
         :param mandatory Tensor[batch_size, src_seq_len] src: index of source tokens
         :param mandatory Tensor[batch_size, tgt_seq_len] tgt: index of target tokens
         :param optional Tensor[batch_size, src_seq_len] src_bert: index of source bert tokens
+        :return softmax distribution
         """
         if self.use_pgn:
             assert (src_ext is not None) and (max_oov_len is not None)
@@ -198,32 +199,35 @@ class Transformer(nn.Module):
             src_padding_mask=src_padding_mask, tgt_padding_mask=tgt_padding_mask
         )
 
+        vocab_dist = F.softmax(self.linear(decoder_out), dim=-1)
+
         final_dist = self.pointer_generator(
             encoder_out=encoder_out, 
             decoder_out=decoder_out, 
+            vocab_dist=vocab_dist,
             decoder_in=tgt_embedding, 
             src_ext=src_ext, 
             max_oov_len=max_oov_len, 
             padding_mask=src_padding_mask, 
             special_token_mask=special_token_mask
-        ) if self.use_pgn else self.linear(decoder_out) 
+        ) if self.use_pgn else vocab_dist
 
         return final_dist
 
 
 class PointerGeneratorNetwork(nn.Module):
-    def __init__(self, d_model, dropout, vocab_size):
+    def __init__(self, d_model, dropout):
         super(PointerGeneratorNetwork, self).__init__()
         self.encoder_decoder_attention = Attention(d_Q_in=d_model, d_K_in=d_model, d_V_in=d_model, d_k=d_model, d_v=d_model, dropout=dropout)
-        self.vocab_projection = Linear(d_model, vocab_size)
         self.context_to_pgen = Linear(d_model, 1)
         self.decoder_out_to_pgen = Linear(d_model, 1)
         self.decoder_in_to_pgen = Linear(d_model, 1)
 
-    def forward(self, encoder_out, decoder_out, decoder_in, src_ext, max_oov_len, padding_mask=None, special_token_mask=None):
+    def forward(self, encoder_out, decoder_out, vocab_dist, decoder_in, src_ext, max_oov_len, padding_mask=None, special_token_mask=None):
         """
         :param mandatory Tensor[batch_size, src_seq_len, d_model] encoder_out
         :param mandatory Tensor[batch_size, tgt_seq_len, d_model] decoder_out
+        :param mandatory Tensor[batch_size, tgt_seq_len, d_model] vocab_dist
         :param mandatory Tensor[batch_size, tgt_seq_len, d_model] decoder_in
         :param mandatory Tensor[batch_size, src_seq_len] src_ext: ids of tokens in extend dictionary
         :param optional Tensor[batch_size, 1, src_seq_len] padding_mask: prevent attention with padding token in src
@@ -233,7 +237,6 @@ class PointerGeneratorNetwork(nn.Module):
             decoder_out, encoder_out, encoder_out, padding_mask=padding_mask, special_token_mask=special_token_mask
         ) # [batch_size, tgt_seq_len, d_model], [batch_size, tgt_seq_len, src_seq_len]
 
-        vocab_dist = F.softmax(self.vocab_projection(decoder_out), dim=-1) # [batch_size, tgt_seq_len, vocab_size]
         extra_zeros = torch.zeros(vocab_dist.size(0), vocab_dist.size(1), max_oov_len, device=vocab_dist.device) # [batch_size, tgt_seq_len, max_oov_len]
         extend_vocab_dist = torch.cat([vocab_dist, extra_zeros], dim=-1) # [batch_size, tgt_seq_len, extend_vocab_size], extend_vocab_size = vocab_size + max_oov_len
 

@@ -1,4 +1,5 @@
 import torch.nn as nn
+from Loss import Loss
 from utils import *
 from Dictionary import *
 from model import NMT
@@ -28,7 +29,8 @@ def main():
     test_loader = DataLoader(dataset=test_dataset, batch_size=4, num_workers=4)
 
     # init criterion
-    criterion = nn.CrossEntropyLoss(ignore_index=dictionary.token_to_index(dictionary.pad_token))
+    # criterion = nn.CrossEntropyLoss(ignore_index=dictionary.token_to_index(dictionary.pad_token))
+    criterion = Loss(ignore_idx=dictionary.token_to_index(dictionary.pad_token), smoothing=0.1)
 
     # load model
     model = NMT.load_from_checkpoint(
