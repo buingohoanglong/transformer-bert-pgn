@@ -94,7 +94,7 @@ class Dictionary():
 
     def tokenize(self, text):
         if self.tokenizer is not None:
-            self.tokenizer.tokenize(text)
+            return self.tokenizer.tokenize(text)
         else:
             return text.strip().split(" ")
 
