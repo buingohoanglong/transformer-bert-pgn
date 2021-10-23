@@ -1,6 +1,6 @@
 vncorenlp
 venv
-data/
+data/vi-en
 __pycache__
 .idea
 lightning_logs
