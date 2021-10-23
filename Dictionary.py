@@ -94,9 +94,7 @@ class Dictionary():
 
     def tokenize(self, text):
         if self.tokenizer is not None:
-            bert_ids = self.tokenizer.encode(text)
-            tokens = self.tokenizer.convert_ids_to_tokens(bert_ids)
-            return tokens[1:-1]
+            return self.tokenizer.tokenize(text)
         else:
             return text.strip().split(" ")
 
