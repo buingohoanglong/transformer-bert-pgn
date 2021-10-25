@@ -1,4 +1,3 @@
-import torch.nn as nn
 from Loss import Loss
 from utils import *
 from Dictionary import *
@@ -8,8 +7,6 @@ from vncorenlp import VnCoreNLP
 from Dataset import *
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint
-from pytorch_lightning.callbacks import LearningRateMonitor
 
 
 def main():
@@ -20,7 +17,7 @@ def main():
     # load dictionary
     dictionary = Dictionary(tokenizer=tokenizer)
     dictionary.add_from_file('./data/vi-ba/dict.txt')
-    dictionary.build_dictionary(limit=8000)
+    dictionary.build_dictionary()
     print(f'--|Vocab size: {len(dictionary)}')
 
     # load test_dataset, test_dataloader

@@ -72,18 +72,9 @@ class NMT(pl.LightningModule):
         input = self._prepare_input(batch, batch_idx)
 
         # forward pass
-        preds = torch.tensor([0], device=self.device).repeat(input['src'].size(0), 1) # [batch_size, current_len]
-        prev = preds.detach().clone()
-        for _ in range(self.max_tgt_len - 1):
-            output = self.model(input['src'], prev, input['src_bert'], input['src_ext'], input['max_oov_len'])  # [batch_size, seq_len, vocab_size]
-            values, ids = torch.max(output, dim=-1)
-            preds = torch.cat([preds,ids[:,-1].unsqueeze(1)],dim=-1)
-            # map oov to unk before feed to next timestep
-            prev = torch.where(
-                preds < len(self.dictionary), 
-                preds, 
-                self.dictionary.token_to_index(self.dictionary.unk_token)
-            )
+        preds = self.model.inference(
+            input['src'], input['src_bert'], input['src_ext'], input['max_oov_len'], self.max_tgt_len
+        )
 
         # decode
         preds = preds.tolist()
@@ -213,6 +204,62 @@ class Transformer(nn.Module):
         ) if self.use_pgn else vocab_dist
 
         return final_dist
+
+    def inference(self, src, src_bert, src_ext=None, max_oov_len=None, max_tgt_len=256):
+        """
+        Arguments:
+            src: [batch_size, src_seq_len]
+            src_bert: [batch_size, src_seq_len]
+            src_ext: [batch_size, src_seq_len]
+            max_oov_len: [batch_size, src_seq_len]
+        Return:
+            preds: [batch_size, tgt_seq_len, vocab_size]
+        """
+        if self.use_pgn:
+            assert (src_ext is not None) and (max_oov_len is not None)
+            assert src_ext.size() == src.size()
+            assert max_oov_len >= 0
+
+        src_padding_mask = src.eq(self.padding_idx).unsqueeze(1) if self.padding_idx is not None else None
+        special_token_mask = src.eq(self.unk_idx).unsqueeze(1) if self.unk_idx is not None else None
+
+        src_embedding = self.src_embedding(src)
+        bert_embedding = self.bert(src_bert).last_hidden_state.detach()
+        encoder_out = self.encoder(src_embedding, bert_embedding, padding_mask=src_padding_mask)
+
+        preds = torch.tensor([0], device=src.device).repeat(src.size(0), 1) # [batch_size, current_len]
+        tgt = preds.detach().clone()
+        for _ in range(max_tgt_len - 1):
+            tgt_embedding = self.tgt_embedding(tgt)
+            tgt_padding_mask = tgt.eq(self.padding_idx).unsqueeze(1) if self.padding_idx is not None else None
+            decoder_out = self.decoder(
+                tgt_embedding, encoder_out, bert_embedding, 
+                src_padding_mask=src_padding_mask, tgt_padding_mask=tgt_padding_mask
+            )
+
+            vocab_dist = F.softmax(self.linear(decoder_out), dim=-1)
+
+            final_dist = self.pointer_generator(
+                encoder_out=encoder_out, 
+                decoder_out=decoder_out, 
+                vocab_dist=vocab_dist,
+                decoder_in=tgt_embedding, 
+                src_ext=src_ext, 
+                max_oov_len=max_oov_len, 
+                padding_mask=src_padding_mask, 
+                special_token_mask=special_token_mask
+            ) if self.use_pgn else vocab_dist # [batch_size, tgt_seq_len, vocab_size]
+            
+            values, ids = torch.max(final_dist, dim=-1)
+            preds = torch.cat([preds,ids[:,-1].unsqueeze(1)],dim=-1)
+            # map oov to unk before feed to next timestep
+            vocab_size = self.tgt_embedding.embedding.num_embeddings
+            tgt = torch.where(
+                preds < vocab_size, 
+                preds, 
+                self.unk_idx
+            )
+        return preds
 
 
 class PointerGeneratorNetwork(nn.Module):
