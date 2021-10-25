@@ -148,6 +148,8 @@ class NMT(pl.LightningModule):
         seq = re.sub(f"^{self.dictionary.pad_token}| {self.dictionary.pad_token}", "", seq)
         seq = re.sub(f"^{self.dictionary.unk_token}| {self.dictionary.unk_token}", "", seq)
         seq = re.sub(f"_", " ", seq)
+        seq = re.sub(f" \.", ".", seq)
+        seq = re.sub(f"' ", "'", seq)
         return seq.strip()
 
 class Transformer(nn.Module):
