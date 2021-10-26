@@ -73,7 +73,8 @@ class NMT(pl.LightningModule):
 
         # forward pass
         preds = self.model.inference(
-            input['src'], input['src_bert'], input['src_ext'], input['max_oov_len'], self.max_tgt_len
+            input['src'], input['src_bert'], input['src_ext'], input['max_oov_len'], 
+            self.max_tgt_len, self.dictionary.token_to_index(self.dictionary.eos_token)
         )
 
         # decode
@@ -150,6 +151,7 @@ class NMT(pl.LightningModule):
         seq = re.sub(f"_", " ", seq)
         seq = re.sub(f" \.", ".", seq)
         seq = re.sub(f"' ", "'", seq)
+        seq = re.sub(f" ,", ",", seq)
         return seq.strip()
 
 class Transformer(nn.Module):
@@ -207,7 +209,7 @@ class Transformer(nn.Module):
 
         return final_dist
 
-    def inference(self, src, src_bert, src_ext=None, max_oov_len=None, max_tgt_len=256):
+    def inference(self, src, src_bert, src_ext=None, max_oov_len=None, max_tgt_len=256, eos_idx=None):
         """
         Arguments:
             src: [batch_size, src_seq_len]
@@ -261,6 +263,11 @@ class Transformer(nn.Module):
                 preds, 
                 self.unk_idx
             )
+
+            if eos_idx is not None:
+                early_stopping = torch.all(preds.eq(eos_idx).sum(dim=-1)).item()
+                if early_stopping:
+                    break
         return preds
 
 
