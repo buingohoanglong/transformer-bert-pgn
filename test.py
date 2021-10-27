@@ -10,7 +10,7 @@ import pytorch_lightning as pl
 
 
 def main():
-    rdrsegmenter = VnCoreNLP("./vncorenlp/VnCoreNLP-1.1.1.jar", annotators="wseg", max_heap_size='-Xmx500m') 
+    annotator = VnCoreNLP("./vncorenlp/VnCoreNLP-1.1.1.jar", annotators="wseg,pos,ner,parse", max_heap_size='-Xmx2g')
     tokenizer = AutoTokenizer.from_pretrained("vinai/phobert-base", use_fast=False)
     phobert = AutoModel.from_pretrained("vinai/phobert-base")
 
@@ -34,7 +34,7 @@ def main():
         checkpoint_path="./checkpoints/last.ckpt",
         dictionary=dictionary, 
         tokenizer=tokenizer, 
-        segmenter=rdrsegmenter, 
+        annotator=annotator, 
         criterion=criterion,
         d_model=512, 
         d_ff=2048,
@@ -44,6 +44,7 @@ def main():
         bert=phobert,
         d_bert=768,
         use_pgn=True,
+        use_ner=True,
         max_src_len=256,
         max_tgt_len=256
     )

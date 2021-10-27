@@ -10,11 +10,11 @@ import re
 from nltk.translate.bleu_score import corpus_bleu
 
 class NMT(pl.LightningModule):
-    def __init__(self, dictionary, tokenizer, segmenter, criterion, d_model, d_ff, num_heads, num_layers, dropout, bert, d_bert, use_pgn=False, max_src_len=256, max_tgt_len=256):
+    def __init__(self, dictionary, tokenizer, annotator, criterion, d_model, d_ff, num_heads, num_layers, dropout, bert, d_bert, use_pgn=False, use_ner=False, max_src_len=256, max_tgt_len=256):
         super(NMT, self).__init__()
         self.dictionary = dictionary
         self.tokenizer = tokenizer
-        self.segmenter = segmenter
+        self.annotator = annotator
         self.criterion = criterion
         self.model = Transformer(
             vocab_size=len(self.dictionary), 
@@ -26,17 +26,22 @@ class NMT(pl.LightningModule):
             bert=bert,
             d_bert=d_bert, 
             padding_idx=self.dictionary.token_to_index(self.dictionary.pad_token), 
-            use_pgn=use_pgn, 
-            unk_idx=self.dictionary.token_to_index(self.dictionary.unk_token)
+            unk_idx=self.dictionary.token_to_index(self.dictionary.unk_token),
+            use_pgn=use_pgn,
+            use_ner=use_ner
         )
         self.max_src_len = max_src_len
         self.max_tgt_len = max_tgt_len
 
     def training_step(self, batch, batch_idx):
-        input = self._prepare_input(batch, batch_idx)
+        input = process_batch(
+            batch, self.dictionary, self.tokenizer, self.annotator, 
+            max_src_len=self.max_src_len, use_pgn=self.model.use_pgn, 
+            use_ner=self.model.use_ner, device=self.device
+        )
 
         output = self.model(
-            input['src'], input['tgt'][:,:-1], input['src_bert'], input['src_ext'], input['max_oov_len']
+            input['src'], input['tgt'][:,:-1], input['src_bert'], input['src_ext'], input['src_ne'], input['max_oov_len']
         )  # [batch_size, seq_len, vocab_size] 
 
         tgt = input['tgt_ext'] if self.model.use_pgn else input['tgt']
@@ -53,10 +58,14 @@ class NMT(pl.LightningModule):
         return {'loss': loss}
 
     def validation_step(self, batch, batch_idx):
-        input = self._prepare_input(batch, batch_idx)
+        input = process_batch(
+            batch, self.dictionary, self.tokenizer, self.annotator, 
+            max_src_len=self.max_src_len, use_pgn=self.model.use_pgn, 
+            use_ner=self.model.use_ner, device=self.device
+        )
         
         output = self.model(
-            input['src'], input['tgt'][:,:-1], input['src_bert'], input['src_ext'], input['max_oov_len']
+            input['src'], input['tgt'][:,:-1], input['src_bert'], input['src_ext'], input['src_ne'], input['max_oov_len']
         )  # [batch_size, seq_len, vocab_size] 
 
         tgt = input['tgt_ext'] if self.model.use_pgn else input['tgt']
@@ -69,11 +78,14 @@ class NMT(pl.LightningModule):
         self.log('val_loss', avg_val_loss, prog_bar=True, logger=True)
 
     def test_step(self, batch, batch_idx):
-        input = self._prepare_input(batch, batch_idx)
+        input = process_batch(
+            batch, self.dictionary, self.tokenizer, self.annotator, 
+            max_src_len=self.max_src_len, use_pgn=self.model.use_pgn, 
+            use_ner=self.model.use_ner, device=self.device
+        )
 
-        # forward pass
         preds = self.model.inference(
-            input['src'], input['src_bert'], input['src_ext'], input['max_oov_len'], 
+            input['src'], input['src_bert'], input['src_ext'], input['src_ne'], input['max_oov_len'], 
             self.max_tgt_len, self.dictionary.token_to_index(self.dictionary.eos_token)
         )
 
@@ -113,34 +125,6 @@ class NMT(pl.LightningModule):
         }
         return {'optimizer': optimizer, 'lr_scheduler': lr_scheduler_config}
 
-    def _prepare_input(self, batch, batch_idx):
-        src_batch, tgt_batch = batch
-        src, tgt, src_bert, src_ext, tgt_ext, dictionary_ext = process_batch(
-            src_batch, tgt_batch, self.dictionary, self.tokenizer, self.segmenter, 
-            max_src_len=self.max_src_len, use_pgn=self.model.use_pgn
-        )
-        src = src.to(self.device)
-        tgt = tgt.to(self.device)
-        src_bert = src_bert.to(self.device)
-        if self.model.use_pgn:
-            src_ext = src_ext.to(self.device)
-            tgt_ext = tgt_ext.to(self.device)
-        max_oov_len = None
-        if self.model.use_pgn:
-            max_oov_len = dictionary_ext.vocab_size - self.dictionary.vocab_size
-
-        return {
-            'src_raw': src_batch,
-            'tgt_raw': tgt_batch,
-            'src': src,
-            'tgt': tgt,
-            'src_bert': src_bert,
-            'src_ext': src_ext,
-            'tgt_ext': tgt_ext,
-            'dictionary_ext': dictionary_ext,
-            'max_oov_len': max_oov_len
-        }
-
     def _postprocess(self, seq):
         eos_idx = seq.find(self.dictionary.eos_token)
         if eos_idx != -1:
@@ -155,7 +139,8 @@ class NMT(pl.LightningModule):
         return seq.strip()
 
 class Transformer(nn.Module):
-    def __init__(self, vocab_size, d_model, d_ff, num_heads, num_layers, dropout, bert, d_bert, padding_idx=None, use_pgn=False, unk_idx=None):
+    def __init__(self, vocab_size, d_model, d_ff, num_heads, num_layers, dropout, bert, d_bert, 
+                padding_idx=None, unk_idx=None, use_pgn=False, use_ner=False):
         super(Transformer, self).__init__()
         self.src_embedding = Embedding(vocab_size=vocab_size, d_model=d_model, dropout=dropout, padding_idx=padding_idx)
         self.tgt_embedding = Embedding(vocab_size=vocab_size, d_model=d_model, dropout=dropout, padding_idx=padding_idx)
@@ -164,25 +149,38 @@ class Transformer(nn.Module):
         self.linear = Linear(d_model, vocab_size)
         self.bert = bert
         self.padding_idx = padding_idx
-        self.use_pgn = use_pgn
         self.unk_idx = unk_idx
+        self.use_pgn = use_pgn
+        self.use_ner = use_ner
         self.pointer_generator = PointerGeneratorNetwork(d_model=d_model, dropout=dropout)
 
-    def forward(self, src, tgt, src_bert, src_ext, max_oov_len):
+    def forward(self, src, tgt, src_bert, src_ext=None, src_ne=None, max_oov_len=None):
         """
-        :param mandatory Tensor[batch_size, src_seq_len] src: index of source tokens
-        :param mandatory Tensor[batch_size, tgt_seq_len] tgt: index of target tokens
-        :param optional Tensor[batch_size, src_seq_len] src_bert: index of source bert tokens
-        :return softmax distribution
+        Arguments:
+            src: [batch_size, src_seq_len] mandatory: index of source tokens
+            tgt: [batch_size, tgt_seq_len] mandatory: index of target tokens
+            src_bert: [batch_size, src_seq_len] mandatory: index of source bert tokens
+            src_ext: [batch_size, src_seq_len] optional: index of source tokens in extend vocab
+            src_ne: [batch_size, src_seq_len] optional: name entity mask (1s for name entities, 0s otherwise)
+            max_oov_len: int optional: number of oov in current batch
+        Return:
+            softmax distribution
         """
         if self.use_pgn:
             assert (src_ext is not None) and (max_oov_len is not None)
             assert src_ext.size() == src.size()
             assert max_oov_len >= 0
 
+        if self.use_ner:
+            assert src_ne is not None
+            assert src_ne.size() == src.size()
+
         src_padding_mask = src.eq(self.padding_idx).unsqueeze(1) if self.padding_idx is not None else None
         tgt_padding_mask = tgt.eq(self.padding_idx).unsqueeze(1) if self.padding_idx is not None else None
-        special_token_mask = src.eq(self.unk_idx).unsqueeze(1) if self.unk_idx is not None else None
+        special_token_mask = self._special_token_mask(
+            unk_mask=src.eq(self.unk_idx).unsqueeze(1) if self.unk_idx is not None else None,
+            ne_mask=src_ne.unsqueeze(1) if self.use_ner else None
+        )
 
         src_embedding = self.src_embedding(src)
         bert_embedding = self.bert(src_bert).last_hidden_state.detach()
@@ -209,7 +207,7 @@ class Transformer(nn.Module):
 
         return final_dist
 
-    def inference(self, src, src_bert, src_ext=None, max_oov_len=None, max_tgt_len=256, eos_idx=None):
+    def inference(self, src, src_bert, src_ext=None, src_ne=None, max_oov_len=None, max_tgt_len=256, eos_idx=None):
         """
         Arguments:
             src: [batch_size, src_seq_len]
@@ -225,7 +223,10 @@ class Transformer(nn.Module):
             assert max_oov_len >= 0
 
         src_padding_mask = src.eq(self.padding_idx).unsqueeze(1) if self.padding_idx is not None else None
-        special_token_mask = src.eq(self.unk_idx).unsqueeze(1) if self.unk_idx is not None else None
+        special_token_mask = self._special_token_mask(
+            unk_mask=src.eq(self.unk_idx).unsqueeze(1) if self.unk_idx is not None else None,
+            ne_mask=src_ne.unsqueeze(1) if self.use_ner else None
+        )
 
         src_embedding = self.src_embedding(src)
         bert_embedding = self.bert(src_bert).last_hidden_state.detach()
@@ -270,6 +271,18 @@ class Transformer(nn.Module):
                     break
         return preds
 
+    def _special_token_mask(self, unk_mask=None, ne_mask=None):
+        """
+        Arguments:
+            unk_mask: [batch_size, 1, seq_len] optional
+            ne_mask: [batch_size, 1, seq_len] optional
+        Return:
+            special_token_mask: [batch_size, 1, seq_len] or None
+        """
+        if unk_mask is None:
+            return ne_mask
+        else:
+            return torch.logical_or(unk_mask, ne_mask) if ne_mask is not None else unk_mask
 
 class PointerGeneratorNetwork(nn.Module):
     def __init__(self, d_model, dropout):
