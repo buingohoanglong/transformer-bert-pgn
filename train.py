@@ -21,7 +21,7 @@ def main():
     # load dictionary
     dictionary = Dictionary(tokenizer=tokenizer)
     dictionary.add_from_file('./data/vi-ba/dict.txt')
-    dictionary.build_dictionary(limit=8000)
+    dictionary.build_dictionary()
     print(f'--|Vocab size: {len(dictionary)}')
 
     # load train_dataset, train_loader
