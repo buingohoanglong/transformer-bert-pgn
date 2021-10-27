@@ -106,6 +106,8 @@ def preprocess(annotator, text, ner=False):
     segments = []
     for s in sentences:
         segments.extend(s)
+    if len(segments) == 0:
+        return {'words': [], 'name_entities': []} if ner else {'words': []}
     if ner:
         words, name_entities = zip(*segments)
         return {
