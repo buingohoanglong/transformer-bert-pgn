@@ -1,5 +1,4 @@
 from collections import Counter
-import torch
 
 class Dictionary():
     def __init__(self, bos_token='<s>', eos_token='</s>', pad_token='<pad>', unk_token='<unk>', tokenizer=None):
@@ -56,7 +55,10 @@ class Dictionary():
         tokens = [self.bos_token] + tokens if append_bos else tokens
         tokens = tokens + [self.eos_token] if append_eos else tokens
         ids = [self.token_to_index(t, update=update) for t in tokens]
-        return torch.tensor(ids)
+        return {
+            'bpe_tokens': tokens,
+            'ids': ids
+        }
 
     def decode(self, ids):
         tokens = [self.index_to_token(idx) for idx in ids]
@@ -98,19 +100,29 @@ class Dictionary():
         else:
             return text.strip().split(" ")
 
-def preprocess(segmenter, text):
-    sentences = segmenter.tokenize(text)
+def preprocess(annotator, text, ner=False):
+    text = text.replace('\xa0', ' ').strip()
+    sentences = annotator.ner(text) if ner else annotator.tokenize(text)
     segments = []
     for s in sentences:
         segments.extend(s)
-    return " ".join(segments)
+    if len(segments) == 0:
+        return {'words': [], 'name_entities': []} if ner else {'words': []}
+    if ner:
+        words, name_entities = zip(*segments)
+        return {
+            'words': words,
+            'name_entities': name_entities
+        }
+    else:
+        return {'words': segments}
 
 
 def build_vocab(dictionary, segmenter, file_path):
     with open(file_path, 'r', encoding='utf-8') as f:
         lines = f.readlines()
         for line_tmp in lines:
-            line = preprocess(segmenter, line_tmp.strip())
+            line = " ".join(preprocess(segmenter, line_tmp.strip())['words'])
             tokens = dictionary.tokenize(line)
             for t in tokens:
                 dictionary.add_token(t)

@@ -1,8 +1,7 @@
-import torch.nn as nn
 from Loss import Loss
 from utils import *
 from Dictionary import *
-from model import Transformer, NMT
+from model import NMT
 from transformers import AutoModel, AutoTokenizer
 from vncorenlp import VnCoreNLP
 from Dataset import *
@@ -14,7 +13,7 @@ from pytorch_lightning.loggers import TensorBoardLogger
 
 
 def main():
-    rdrsegmenter = VnCoreNLP("./vncorenlp/VnCoreNLP-1.1.1.jar", annotators="wseg", max_heap_size='-Xmx500m') 
+    annotator = VnCoreNLP("./vncorenlp/VnCoreNLP-1.1.1.jar", annotators="wseg,pos,ner,parse", max_heap_size='-Xmx2g')
     tokenizer = AutoTokenizer.from_pretrained("vinai/phobert-base", use_fast=False)
     phobert = AutoModel.from_pretrained("vinai/phobert-base")
 
@@ -32,7 +31,7 @@ def main():
     # load val_dataset, val_loader
     val_dataset = NMTDataset('./data/vi-ba/valid.vi', './data/vi-ba/valid.ba')
     print(f'--|Number of valid samples: {len(val_dataset)}')
-    val_loader = DataLoader(dataset=val_dataset, batch_size=4, num_workers=4, shuffle=True)
+    val_loader = DataLoader(dataset=val_dataset, batch_size=4, num_workers=4, shuffle=False)
 
     # init criterion
     # criterion = nn.CrossEntropyLoss(ignore_index=dictionary.token_to_index(dictionary.pad_token))
@@ -42,7 +41,7 @@ def main():
     model = NMT(
         dictionary=dictionary, 
         tokenizer=tokenizer, 
-        segmenter=rdrsegmenter, 
+        annotator=annotator, 
         criterion=criterion,
         d_model=512, 
         d_ff=2048,
@@ -52,6 +51,7 @@ def main():
         bert=phobert,
         d_bert=768,
         use_pgn=True,
+        use_ner=True,
         max_src_len=256,
         max_tgt_len=256
     )
