@@ -13,7 +13,7 @@ from pytorch_lightning.loggers import TensorBoardLogger
 
 
 def main():
-    annotator = VnCoreNLP("./vncorenlp/VnCoreNLP-1.1.1.jar", annotators="wseg,pos,ner,parse", max_heap_size='-Xmx2g')
+    annotator = VnCoreNLP(address="http://127.0.0.1", port=9000)
     tokenizer = AutoTokenizer.from_pretrained("vinai/phobert-base", use_fast=False)
     phobert = AutoModel.from_pretrained("vinai/phobert-base")
 
