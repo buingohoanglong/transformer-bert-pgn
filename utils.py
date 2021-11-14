@@ -1,7 +1,7 @@
 import torch
 from Dictionary import Dictionary, preprocess
 from torch.nn.utils.rnn import pad_sequence
-
+import re
 
 def process_batch(batch, dictionary, tokenizer, annotator, 
                 max_src_len=256, use_pgn=False, use_ner=False, device='cpu'):
@@ -112,3 +112,54 @@ def ner_for_bpe(bpe_tokens, ne_tokens, get_mask=False, special_tokens=None):
         ne_tokens_ext.append(value)
     return ne_tokens_ext
         
+
+def no_accent_vietnamese(s):
+    s = re.sub(r'[àáạảã]', 'a', s)
+    s = re.sub(r'[ấầậẩẫ]', 'â', s)
+    s = re.sub(r'[ắằặẳẵ]', 'ă', s)
+    s = re.sub(r'[ÀÁẠẢÃ]', 'A', s)
+    s = re.sub(r'[ẦẤẬẨẪ]', 'Â', s)
+    s = re.sub(r'[ẰẮẶẲẴ]', 'Ă', s)
+    s = re.sub(r'[èéẹẻẽ]', 'e', s)
+    s = re.sub(r'[ềếệểễ]', 'ê', s)
+    s = re.sub(r'[ÈÉẸẺẼ]', 'E', s)
+    s = re.sub(r'[ỀẾỆỂỄ]', 'Ê', s)
+    s = re.sub(r'[òóọỏõ]', 'o', s)
+    s = re.sub(r'[ồốộổỗ]', 'ô', s)
+    s = re.sub(r'[ờớợởỡ]', 'ơ', s)
+    s = re.sub(r'[ÒÓỌỎÕ]', 'O', s)
+    s = re.sub(r'[ỒỐỘỔỖ]', 'Ô', s)
+    s = re.sub(r'[ỜỚỢỞỠ]', 'Ơ', s)
+    s = re.sub(r'[ìíịỉĩ]', 'i', s)
+    s = re.sub(r'[ÌÍỊỈĨ]', 'I', s)
+    s = re.sub(r'[ùúụủũ]', 'u', s)
+    s = re.sub(r'[ừứựửữ]', 'ư', s)
+    s = re.sub(r'[ÙÚỤỦŨ]', 'U', s)
+    s = re.sub(r'[ỪỨỰỬỮ]', 'Ư', s)
+    s = re.sub(r'[ỳýỵỷỹ]', 'y', s)
+    s = re.sub(r'[ỲÝỴỶỸ]', 'Y', s)
+    return s
+
+def format(text):
+    text = re.sub(f"  ", " ", text)
+    text = re.sub(f"_", " ", text)
+    text = re.sub(f" \.", ".", text)
+    text = re.sub(f"' ", "'", text)
+    text = re.sub(f" ,", ",", text)
+    text = re.sub(f" ;", ";", text)
+    text = re.sub(f" %", "%", text)
+    text = re.sub(f" :", ":", text)
+    text = re.sub(f" !", "!", text)
+    text = re.sub(f" \?", "?", text)
+    text = re.sub(f"\( ", "(", text)
+    text = re.sub(f" \)", ")", text)
+    text = re.sub(f" / ", "/", text)
+    text = re.sub(f"\" ", "\"", text)
+    text = re.sub(f" \"", "\"", text)
+    text = re.sub(f" g ", "g ", text)
+    text = re.sub(f" kg ", "kg ", text)
+    text = re.sub(f" m ", "m ", text)
+    text = re.sub(f" cm ", "cm ", text)
+    text = re.sub(f" m2 ", "m2 ", text)
+    text = re.sub(f" ha ", "ha ", text)
+    return text.strip()

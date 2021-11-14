@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import math
 import pytorch_lightning as pl
 from NoamLRScheduler import *
-from utils import process_batch
+from utils import process_batch, format, no_accent_vietnamese
 from numpy.random import  uniform
 import re
 from nltk.translate.bleu_score import corpus_bleu
@@ -132,11 +132,8 @@ class NMT(pl.LightningModule):
         seq = re.sub(f"^{self.dictionary.bos_token}| {self.dictionary.bos_token}", "", seq)
         seq = re.sub(f"^{self.dictionary.pad_token}| {self.dictionary.pad_token}", "", seq)
         seq = re.sub(f"^{self.dictionary.unk_token}| {self.dictionary.unk_token}", "", seq)
-        seq = re.sub(f"_", " ", seq)
-        seq = re.sub(f" \.", ".", seq)
-        seq = re.sub(f"' ", "'", seq)
-        seq = re.sub(f" ,", ",", seq)
-        return seq.strip()
+        seq = no_accent_vietnamese(seq)
+        return format(seq)
 
 class Transformer(nn.Module):
     def __init__(self, vocab_size, d_model, d_ff, num_heads, num_layers, dropout, bert, d_bert, 
