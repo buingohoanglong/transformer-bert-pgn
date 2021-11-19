@@ -1,6 +1,7 @@
-from Dictionary import Dictionary, build_vocab
+from Dictionary import Dictionary
 from transformers import AutoTokenizer
 from vncorenlp import VnCoreNLP
+from utils import build_vocab
 
 def main():
     tokenizer = AutoTokenizer.from_pretrained("vinai/phobert-base", use_fast=False)
