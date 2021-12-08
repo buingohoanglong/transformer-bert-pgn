@@ -14,12 +14,14 @@ from pytorch_lightning.loggers import TensorBoardLogger
 
 def main():
     annotator = VnCoreNLP(address="http://127.0.0.1", port=9000)
-    tokenizer = AutoTokenizer.from_pretrained("vinai/phobert-base", use_fast=False)
-    phobert = AutoModel.from_pretrained("vinai/phobert-base")
+    # tokenizer = AutoTokenizer.from_pretrained("vinai/phobert-base", use_fast=False)
+    # phobert = AutoModel.from_pretrained("vinai/phobert-base")
+    word_tokenizer = AutoTokenizer.from_pretrained("vinai/bartpho-word", use_fast=False)
+    bartpho_word = AutoModel.from_pretrained("vinai/bartpho-word")
 
     # load dictionary
-    dictionary = Dictionary(tokenizer=tokenizer)
-    dictionary.add_from_file('./data/vi-ba/dict.txt')
+    dictionary = Dictionary(tokenizer=word_tokenizer)
+    dictionary.add_from_file('./data/vi-ba/dict-synonymaugment.txt')
     dictionary.build_dictionary()
     print(f'--|Vocab size: {len(dictionary)}')
 
@@ -40,7 +42,7 @@ def main():
     # load model
     model = NMT(
         dictionary=dictionary, 
-        tokenizer=tokenizer, 
+        tokenizer=word_tokenizer, 
         annotator=annotator, 
         criterion=criterion,
         d_model=512, 
@@ -48,8 +50,8 @@ def main():
         num_heads=8, 
         num_layers=6, 
         dropout=0.1,
-        bert=phobert,
-        d_bert=768,
+        bert=bartpho_word,
+        d_bert=1024,
         use_pgn=True,
         use_ner=True,
         max_src_len=256,
