@@ -11,11 +11,13 @@ import pytorch_lightning as pl
 
 def main():
     annotator = VnCoreNLP("./vncorenlp/VnCoreNLP-1.1.1.jar", annotators="wseg,pos,ner,parse", max_heap_size='-Xmx2g')
-    tokenizer = AutoTokenizer.from_pretrained("vinai/phobert-base", use_fast=False)
-    phobert = AutoModel.from_pretrained("vinai/phobert-base")
+    # tokenizer = AutoTokenizer.from_pretrained("vinai/phobert-base", use_fast=False)
+    # phobert = AutoModel.from_pretrained("vinai/phobert-base")
+    word_tokenizer = AutoTokenizer.from_pretrained("vinai/bartpho-word", use_fast=False)
+    bartpho_word = AutoModel.from_pretrained("vinai/bartpho-word")
 
     # load dictionary
-    dictionary = Dictionary(tokenizer=tokenizer)
+    dictionary = Dictionary(tokenizer=word_tokenizer)
     dictionary.add_from_file('./data/vi-ba/dict.txt')
     dictionary.build_dictionary()
     print(f'--|Vocab size: {len(dictionary)}')
@@ -33,7 +35,7 @@ def main():
     model = NMT.load_from_checkpoint(
         checkpoint_path="./checkpoints/last.ckpt",
         dictionary=dictionary, 
-        tokenizer=tokenizer, 
+        tokenizer=word_tokenizer, 
         annotator=annotator, 
         criterion=criterion,
         d_model=512, 
@@ -41,8 +43,8 @@ def main():
         num_heads=8, 
         num_layers=6, 
         dropout=0.1,
-        bert=phobert,
-        d_bert=768,
+        bert=bartpho_word,
+        d_bert=1024,
         use_pgn=True,
         use_ner=True,
         max_src_len=256,
