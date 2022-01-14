@@ -15,7 +15,8 @@ from pytorch_lightning.loggers import TensorBoardLogger
 def main():
     annotator = VnCoreNLP(address="http://127.0.0.1", port=9000)
     tokenizer = AutoTokenizer.from_pretrained("vinai/phobert-base", use_fast=False)
-    phobert = AutoModel.from_pretrained("vinai/phobert-base")
+    bert_tokenizer = AutoTokenizer.from_pretrained("bert-base-multilingual-cased", use_fast=False)
+    bert = AutoModel.from_pretrained("bert-base-multilingual-cased")
 
     # load dictionary
     dictionary = Dictionary(tokenizer=tokenizer)
@@ -40,7 +41,7 @@ def main():
     # load model
     model = NMT(
         dictionary=dictionary, 
-        tokenizer=tokenizer, 
+        bert_tokenizer=bert_tokenizer, 
         annotator=annotator, 
         criterion=criterion,
         d_model=512, 
@@ -48,12 +49,12 @@ def main():
         num_heads=8, 
         num_layers=6, 
         dropout=0.1,
-        bert=phobert,
+        bert=bert,
         d_bert=768,
         use_pgn=True,
         use_ner=True,
-        max_src_len=256,
-        max_tgt_len=256
+        max_src_len=512,
+        max_tgt_len=512
     )
     
     # checkpoint callback
@@ -77,17 +78,10 @@ def main():
         accumulate_grad_batches=64, 
         gpus=1 if torch.cuda.is_available() else 0,
         log_every_n_steps=1,
+        max_epochs=21,
         callbacks=[checkpoint_callback, lr_monitor],
         logger=logger
     )
-    # trainer = pl.Trainer(
-    #     resume_from_checkpoint="./checkpoints/last.ckpt",
-    #     accumulate_grad_batches=64,
-    #     gpus=1 if torch.cuda.is_available() else 0,
-    #     log_every_n_steps=1,
-    #     callbacks=[checkpoint_callback, lr_monitor],
-    #     logger=logger
-    # )
 
     # train
     trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader)

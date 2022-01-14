@@ -3,7 +3,7 @@ from Dictionary import Dictionary, preprocess
 from torch.nn.utils.rnn import pad_sequence
 import re
 
-def process_batch(batch, dictionary, tokenizer, annotator, 
+def process_batch(batch, dictionary, bert_tokenizer, annotator, 
                 max_src_len=256, use_pgn=False, use_ner=False, device='cpu'):
     """
     input: list [batch_size] of tensors in different lengths
@@ -13,7 +13,7 @@ def process_batch(batch, dictionary, tokenizer, annotator,
     assert len(src_batch) == len(tgt_batch)
     dictionary_ext = None
     if use_pgn:
-        dictionary_ext = Dictionary(tokenizer=tokenizer)
+        dictionary_ext = Dictionary(tokenizer=dictionary.tokenizer)
         dictionary_ext.token2index = {**dictionary.token2index}
         dictionary_ext.index2token = {**dictionary.index2token}
         dictionary_ext.vocab_size = dictionary.vocab_size
@@ -28,35 +28,35 @@ def process_batch(batch, dictionary, tokenizer, annotator,
         tgt_preprocessed = preprocess(annotator, tgt_batch[idx].strip(), ner=use_ner)
         src_str = " ".join(src_preprocessed['words'])
         tgt_str = " ".join(tgt_preprocessed['words'])
-        src_encode = dictionary.encode(src_str, append_bos=False, append_eos=True)
-        tgt_encode = dictionary.encode(tgt_str, append_bos=True, append_eos=True)
+        src_encode = dictionary.encode(src_str, append_cls=False, append_sep=True)
+        tgt_encode = dictionary.encode(tgt_str, append_cls=True, append_sep=True)
         src.append(torch.tensor(src_encode['ids']))
         tgt.append(torch.tensor(tgt_encode['ids']))
-        src_bert.append(torch.tensor(tokenizer.encode(src_str)[1:]))
+        src_bert.append(torch.tensor(bert_tokenizer.encode(src_str)[1:]))
         if use_pgn:
             src_ext.append(torch.tensor(
-                dictionary_ext.encode(src_str, append_bos=False, append_eos=True, update=True)['ids']
+                dictionary_ext.encode(src_str, append_cls=False, append_sep=True, update=True)['ids']
             ))
             tgt_ext.append(torch.tensor(
-                dictionary_ext.encode(tgt_str, append_bos=True, append_eos=True, update=True)['ids']
+                dictionary_ext.encode(tgt_str, append_cls=True, append_sep=True, update=True)['ids']
             ))
         if use_ner:
             src_ne.append(
                 torch.tensor(ner_for_bpe(
                     bpe_tokens=src_encode['bpe_tokens'], ne_tokens=src_preprocessed['name_entities'], 
-                    get_mask=True, special_tokens=[dictionary.bos_token, dictionary.eos_token]
+                    get_mask=True, special_tokens=[dictionary.cls_token, dictionary.sep_token]
                 ))
             )
 
     src = pad_sequence(src, padding_value=dictionary.token_to_index(dictionary.pad_token), batch_first=True)
     tgt = pad_sequence(tgt, padding_value=dictionary.token_to_index(dictionary.pad_token), batch_first=True)
-    src_bert = pad_sequence(src_bert, padding_value=tokenizer.pad_token_id, batch_first=True)
+    src_bert = pad_sequence(src_bert, padding_value=bert_tokenizer.pad_token_id, batch_first=True)
     if use_pgn:
         src_ext = pad_sequence(src_ext, padding_value=dictionary_ext.token_to_index(dictionary_ext.pad_token), batch_first=True)
         tgt_ext = pad_sequence(tgt_ext, padding_value=dictionary_ext.token_to_index(dictionary_ext.pad_token), batch_first=True)
     if use_ner:
         src_ne = pad_sequence(src_ne, padding_value=0, batch_first=True)
-    assert src.size(1) == src_bert.size(1)
+    # assert src.size(1) == src_bert.size(1)
     # Truncate if seq_len exceed max_src_length
     if src.size(1) > max_src_len:
         src = src[:,:max_src_len]

@@ -10,10 +10,10 @@ import re
 from nltk.translate.bleu_score import corpus_bleu
 
 class NMT(pl.LightningModule):
-    def __init__(self, dictionary, tokenizer, annotator, criterion, d_model, d_ff, num_heads, num_layers, dropout, bert, d_bert, use_pgn=False, use_ner=False, max_src_len=256, max_tgt_len=256):
+    def __init__(self, dictionary, bert_tokenizer, annotator, criterion, d_model, d_ff, num_heads, num_layers, dropout, bert, d_bert, use_pgn=False, use_ner=False, max_src_len=256, max_tgt_len=256):
         super(NMT, self).__init__()
         self.dictionary = dictionary
-        self.tokenizer = tokenizer
+        self.bert_tokenizer = bert_tokenizer
         self.annotator = annotator
         self.criterion = criterion
         self.model = Transformer(
@@ -25,7 +25,8 @@ class NMT(pl.LightningModule):
             dropout=dropout,
             bert=bert,
             d_bert=d_bert, 
-            padding_idx=self.dictionary.token_to_index(self.dictionary.pad_token), 
+            padding_idx=self.dictionary.token_to_index(self.dictionary.pad_token),
+            bert_padding_idx=bert_tokenizer.pad_token_id,
             unk_idx=self.dictionary.token_to_index(self.dictionary.unk_token),
             use_pgn=use_pgn,
             use_ner=use_ner
@@ -35,7 +36,7 @@ class NMT(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         input = process_batch(
-            batch, self.dictionary, self.tokenizer, self.annotator, 
+            batch, self.dictionary, self.bert_tokenizer, self.annotator, 
             max_src_len=self.max_src_len, use_pgn=self.model.use_pgn, 
             use_ner=self.model.use_ner, device=self.device
         )
@@ -59,7 +60,7 @@ class NMT(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         input = process_batch(
-            batch, self.dictionary, self.tokenizer, self.annotator, 
+            batch, self.dictionary, self.bert_tokenizer, self.annotator, 
             max_src_len=self.max_src_len, use_pgn=self.model.use_pgn, 
             use_ner=self.model.use_ner, device=self.device
         )
@@ -79,14 +80,14 @@ class NMT(pl.LightningModule):
 
     def test_step(self, batch, batch_idx):
         input = process_batch(
-            batch, self.dictionary, self.tokenizer, self.annotator, 
+            batch, self.dictionary, self.bert_tokenizer, self.annotator, 
             max_src_len=self.max_src_len, use_pgn=self.model.use_pgn, 
             use_ner=self.model.use_ner, device=self.device
         )
 
         preds = self.model.inference(
             input['src'], input['src_bert'], input['src_ext'], input['src_ne'], input['max_oov_len'], 
-            self.max_tgt_len, self.dictionary.token_to_index(self.dictionary.eos_token)
+            self.max_tgt_len, self.dictionary.token_to_index(self.dictionary.sep_token)
         )
 
         # decode
@@ -95,7 +96,7 @@ class NMT(pl.LightningModule):
         decode_dict = input['dictionary_ext'] if self.model.use_pgn else self.dictionary
         for seq_ids in preds:
             tokens = [decode_dict.index_to_token(i) for i in seq_ids]
-            seq = self.tokenizer.convert_tokens_to_string(tokens)
+            seq = decode_dict.tokenizer.convert_tokens_to_string(tokens)
             sequences.append(self._postprocess(seq))
 
         # print results
@@ -126,10 +127,10 @@ class NMT(pl.LightningModule):
         return {'optimizer': optimizer, 'lr_scheduler': lr_scheduler_config}
 
     def _postprocess(self, seq):
-        eos_idx = seq.find(self.dictionary.eos_token)
+        eos_idx = seq.find(self.dictionary.sep_token)
         if eos_idx != -1:
             seq = seq[:eos_idx]
-        seq = re.sub(f"^{self.dictionary.bos_token}| {self.dictionary.bos_token}", "", seq)
+        seq = re.sub(f"^{self.dictionary.cls_token}| {self.dictionary.cls_token}", "", seq)
         seq = re.sub(f"^{self.dictionary.pad_token}| {self.dictionary.pad_token}", "", seq)
         seq = re.sub(f"^{self.dictionary.unk_token}| {self.dictionary.unk_token}", "", seq)
         seq = no_accent_vietnamese(seq)
@@ -137,7 +138,7 @@ class NMT(pl.LightningModule):
 
 class Transformer(nn.Module):
     def __init__(self, vocab_size, d_model, d_ff, num_heads, num_layers, dropout, bert, d_bert, 
-                padding_idx=None, unk_idx=None, use_pgn=False, use_ner=False):
+                padding_idx=None, bert_padding_idx=None, unk_idx=None, use_pgn=False, use_ner=False):
         super(Transformer, self).__init__()
         self.src_embedding = Embedding(vocab_size=vocab_size, d_model=d_model, dropout=dropout, padding_idx=padding_idx)
         self.tgt_embedding = Embedding(vocab_size=vocab_size, d_model=d_model, dropout=dropout, padding_idx=padding_idx)
@@ -146,6 +147,7 @@ class Transformer(nn.Module):
         self.linear = Linear(d_model, vocab_size)
         self.bert = bert
         self.padding_idx = padding_idx
+        self.bert_padding_idx = bert_padding_idx
         self.unk_idx = unk_idx
         self.use_pgn = use_pgn
         self.use_ner = use_ner
@@ -173,6 +175,7 @@ class Transformer(nn.Module):
             assert src_ne.size() == src.size()
 
         src_padding_mask = src.eq(self.padding_idx).unsqueeze(1) if self.padding_idx is not None else None
+        bert_padding_mask = src_bert.eq(self.bert_padding_idx).unsqueeze(1) if self.bert_padding_idx is not None else None
         tgt_padding_mask = tgt.eq(self.padding_idx).unsqueeze(1) if self.padding_idx is not None else None
         special_token_mask = self._special_token_mask(
             unk_mask=src.eq(self.unk_idx).unsqueeze(1) if self.unk_idx is not None else None,
@@ -181,12 +184,15 @@ class Transformer(nn.Module):
 
         src_embedding = self.src_embedding(src)
         bert_embedding = self.bert(src_bert).last_hidden_state.detach()
-        encoder_out = self.encoder(src_embedding, bert_embedding, padding_mask=src_padding_mask)
+        encoder_out = self.encoder(
+            src_embedding, bert_embedding, 
+            src_padding_mask=src_padding_mask, bert_padding_mask=bert_padding_mask
+        )
 
         tgt_embedding = self.tgt_embedding(tgt)
         decoder_out = self.decoder(
             tgt_embedding, encoder_out, bert_embedding, 
-            src_padding_mask=src_padding_mask, tgt_padding_mask=tgt_padding_mask
+            src_padding_mask=src_padding_mask, bert_padding_mask=bert_padding_mask, tgt_padding_mask=tgt_padding_mask
         )
 
         vocab_dist = F.softmax(self.linear(decoder_out), dim=-1)
@@ -204,7 +210,7 @@ class Transformer(nn.Module):
 
         return final_dist
 
-    def inference(self, src, src_bert, src_ext=None, src_ne=None, max_oov_len=None, max_tgt_len=256, eos_idx=None):
+    def inference(self, src, src_bert, src_ext=None, src_ne=None, max_oov_len=None, max_tgt_len=256, sep_idx=None):
         """
         Arguments:
             src: [batch_size, src_seq_len]
@@ -220,6 +226,7 @@ class Transformer(nn.Module):
             assert max_oov_len >= 0
 
         src_padding_mask = src.eq(self.padding_idx).unsqueeze(1) if self.padding_idx is not None else None
+        bert_padding_mask = src_bert.eq(self.bert_padding_idx).unsqueeze(1) if self.bert_padding_idx is not None else None
         special_token_mask = self._special_token_mask(
             unk_mask=src.eq(self.unk_idx).unsqueeze(1) if self.unk_idx is not None else None,
             ne_mask=src_ne.unsqueeze(1) if self.use_ner else None
@@ -227,7 +234,10 @@ class Transformer(nn.Module):
 
         src_embedding = self.src_embedding(src)
         bert_embedding = self.bert(src_bert).last_hidden_state.detach()
-        encoder_out = self.encoder(src_embedding, bert_embedding, padding_mask=src_padding_mask)
+        encoder_out = self.encoder(
+            src_embedding, bert_embedding, 
+            src_padding_mask=src_padding_mask, bert_padding_mask=bert_padding_mask
+        )
 
         preds = torch.tensor([0], device=src.device).repeat(src.size(0), 1) # [batch_size, current_len]
         tgt = preds.detach().clone()
@@ -236,7 +246,7 @@ class Transformer(nn.Module):
             tgt_padding_mask = tgt.eq(self.padding_idx).unsqueeze(1) if self.padding_idx is not None else None
             decoder_out = self.decoder(
                 tgt_embedding, encoder_out, bert_embedding, 
-                src_padding_mask=src_padding_mask, tgt_padding_mask=tgt_padding_mask
+                src_padding_mask=src_padding_mask, bert_padding_mask=bert_padding_mask, tgt_padding_mask=tgt_padding_mask
             )
 
             vocab_dist = F.softmax(self.linear(decoder_out), dim=-1)
@@ -262,8 +272,8 @@ class Transformer(nn.Module):
                 self.unk_idx
             )
 
-            if eos_idx is not None:
-                early_stopping = torch.all(preds.eq(eos_idx).sum(dim=-1)).item()
+            if sep_idx is not None:
+                early_stopping = torch.all(preds.eq(sep_idx).sum(dim=-1)).item()
                 if early_stopping:
                     break
         return preds
@@ -331,9 +341,9 @@ class Encoder(nn.Module):
             for _ in range(num_layers)
         ])
 
-    def forward(self, x, bert_embedding, padding_mask=None):
+    def forward(self, x, bert_embedding, src_padding_mask=None, bert_padding_mask=None):
         for layer in self.encoder_layers:
-            x = layer(x, bert_embedding, padding_mask=padding_mask)
+            x = layer(x, bert_embedding, src_padding_mask=src_padding_mask, bert_padding_mask=bert_padding_mask)
         return x
 
 
@@ -345,18 +355,19 @@ class Decoder(nn.Module):
             for _ in range(num_layers)
         ])
 
-    def forward(self, x, encoder_out, bert_embedding, src_padding_mask=None, tgt_padding_mask=None):
+    def forward(self, x, encoder_out, bert_embedding, src_padding_mask=None, bert_padding_mask=None, tgt_padding_mask=None):
         """
         :param mandatory Tensor[batch_size, tgt_seq_len, d_model] x: embedding of previous decoder layer
         :param mandatory Tensor[batch_size, src_seq_len, d_model] encoder_out: embedding of final encoder layer
         :param mandatory Tensor[batch_size, src_seq_len, d_bert] bert_embedding: embedding of bert
-        :param optional Tensor[batch_size, 1, src_seq_len] src_padding_mask: padding mask for key from decoder
-        :param optional Tensor[batch_size, 1, tgt_seq_len] tgt_padding_mask: padding mask for key from encoder, bert
+        :param optional Tensor[batch_size, 1, src_seq_len] src_padding_mask: padding mask for key from encoder
+        :param optional Tensor[batch_size, 1, src_seq_len] bert_padding_mask: padding mask for key from bert
+        :param optional Tensor[batch_size, 1, tgt_seq_len] tgt_padding_mask: padding mask for key from decoder
         """
         for layer in self.decoder_layers:
             x = layer(
                 x, encoder_out, bert_embedding, 
-                src_padding_mask=src_padding_mask, tgt_padding_mask=tgt_padding_mask
+                src_padding_mask=src_padding_mask, bert_padding_mask=bert_padding_mask, tgt_padding_mask=tgt_padding_mask
             )
         return x
 
@@ -384,13 +395,13 @@ class EncoderLayer(nn.Module):
         assert self.encoder_bert_dropout_ratio >= 0. and self.encoder_bert_dropout_ratio <= 0.5
 
 
-    def forward(self, x, bert_embedding, padding_mask=None):
+    def forward(self, x, bert_embedding, src_padding_mask=None, bert_padding_mask=None):
         """
         :param Tensor[batch_size, seq_len] x
         :return Tensor[batch_size, seq_len, d_model] position_encoding
         """
-        self_attention = self.self_attention(x, x, x, padding_mask=padding_mask)
-        bert_enc_attention = self.bert_enc_attention(x, bert_embedding, bert_embedding, padding_mask=padding_mask)
+        self_attention = self.self_attention(x, x, x, padding_mask=src_padding_mask)
+        bert_enc_attention = self.bert_enc_attention(x, bert_embedding, bert_embedding, padding_mask=bert_padding_mask)
         ratios = self.get_ratios()
         bertfused_attention = self.attention_residual(
             ratios[0]*self_attention + ratios[1]*bert_enc_attention,
@@ -441,13 +452,14 @@ class DecoderLayer(nn.Module):
         self.decoder_bert_dropout_ratio = decoder_bert_dropout_ratio
         assert self.decoder_bert_dropout_ratio >= 0. and self.decoder_bert_dropout_ratio <= 0.5
 
-    def forward(self, x, encoder_out, bert_embedding, src_padding_mask=None, tgt_padding_mask=None):
+    def forward(self, x, encoder_out, bert_embedding, src_padding_mask=None, bert_padding_mask=None, tgt_padding_mask=None):
         """
         :param mandatory Tensor[batch_size, tgt_seq_len, d_model] x: embedding of previous decoder layer
         :param mandatory Tensor[batch_size, src_seq_len, d_model] encoder_out: embedding of final encoder layer
         :param mandatory Tensor[batch_size, src_seq_len, d_bert] bert_embedding: embedding of bert
-        :param optional Tensor[batch_size, 1, src_seq_len] src_padding_mask: padding mask for key from decoder
-        :param optional Tensor[batch_size, 1, tgt_seq_len] tgt_padding_mask: padding mask for key from encoder, bert
+        :param optional Tensor[batch_size, 1, src_seq_len] src_padding_mask: padding mask for key from encoder
+        :param optional Tensor[batch_size, 1, bert_seq_len] bert_padding_mask: padding mask for key from bert
+        :param optional Tensor[batch_size, 1, tgt_seq_len] tgt_padding_mask: padding mask for key from decoder
         """
         self_attention = self.self_attention_residual(
             self.self_attention(x, x, x, padding_mask=tgt_padding_mask), 
@@ -458,7 +470,7 @@ class DecoderLayer(nn.Module):
             self_attention, encoder_out, encoder_out, padding_mask=src_padding_mask
         )
         bert_dec_attention = self.bert_dec_attention(
-            self_attention, bert_embedding, bert_embedding, padding_mask=src_padding_mask
+            self_attention, bert_embedding, bert_embedding, padding_mask=bert_padding_mask
         )
         ratios = self.get_ratios()
         bertfused_attention = self.bertfused_attention_residual(
