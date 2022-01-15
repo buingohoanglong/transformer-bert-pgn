@@ -86,8 +86,10 @@ class NMT(pl.LightningModule):
         )
 
         preds = self.model.inference(
-            input['src'], input['src_bert'], input['src_ext'], input['src_ne'], input['max_oov_len'], 
-            self.max_tgt_len, self.dictionary.token_to_index(self.dictionary.sep_token)
+            input['src'], input['src_bert'], 
+            self.dictionary.token_to_index(self.dictionary.cls_token),
+            self.dictionary.token_to_index(self.dictionary.sep_token),
+            input['src_ext'], input['src_ne'], input['max_oov_len'], self.max_tgt_len
         )
 
         # decode
@@ -210,7 +212,8 @@ class Transformer(nn.Module):
 
         return final_dist
 
-    def inference(self, src, src_bert, src_ext=None, src_ne=None, max_oov_len=None, max_tgt_len=256, sep_idx=None):
+    def inference(self, src, src_bert, cls_idx, sep_idx, src_ext=None, 
+                src_ne=None, max_oov_len=None, max_tgt_len=256):
         """
         Arguments:
             src: [batch_size, src_seq_len]
@@ -239,7 +242,7 @@ class Transformer(nn.Module):
             src_padding_mask=src_padding_mask, bert_padding_mask=bert_padding_mask
         )
 
-        preds = torch.tensor([0], device=src.device).repeat(src.size(0), 1) # [batch_size, current_len]
+        preds = torch.tensor([cls_idx], device=src.device).repeat(src.size(0), 1) # [batch_size, current_len]
         tgt = preds.detach().clone()
         for _ in range(max_tgt_len - 1):
             tgt_embedding = self.tgt_embedding(tgt)
