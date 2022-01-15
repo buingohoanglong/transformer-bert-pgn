@@ -132,9 +132,9 @@ class NMT(pl.LightningModule):
         eos_idx = seq.find(self.dictionary.sep_token)
         if eos_idx != -1:
             seq = seq[:eos_idx]
-        seq = re.sub(f"^{self.dictionary.cls_token}| {self.dictionary.cls_token}", "", seq)
-        seq = re.sub(f"^{self.dictionary.pad_token}| {self.dictionary.pad_token}", "", seq)
-        seq = re.sub(f"^{self.dictionary.unk_token}| {self.dictionary.unk_token}", "", seq)
+        seq = re.sub(f"^{re.escape(self.dictionary.cls_token)}| {re.escape(self.dictionary.cls_token)}", "", seq)
+        seq = re.sub(f"^{re.escape(self.dictionary.pad_token)}| {re.escape(self.dictionary.pad_token)}", "", seq)
+        seq = re.sub(f"^{re.escape(self.dictionary.unk_token)}| {re.escape(self.dictionary.unk_token)}", "", seq)
         seq = no_accent_vietnamese(seq)
         return format(seq)
 
