@@ -15,7 +15,7 @@ from pytorch_lightning.loggers import TensorBoardLogger
 def main():
     annotator = VnCoreNLP(address="http://127.0.0.1", port=9000)
     tokenizer = AutoTokenizer.from_pretrained("vinai/phobert-base", use_fast=False)
-    phobert = AutoModel.from_pretrained("vinai/phobert-base")
+    # phobert = AutoModel.from_pretrained("vinai/phobert-base")
 
     # load dictionary
     dictionary = Dictionary(tokenizer=tokenizer)
@@ -48,8 +48,8 @@ def main():
         num_heads=8, 
         num_layers=6, 
         dropout=0.1,
-        bert=phobert,
-        d_bert=768,
+        bert=None,
+        d_bert=None,
         use_pgn=True,
         use_ner=True,
         max_src_len=256,
@@ -77,6 +77,7 @@ def main():
         accumulate_grad_batches=64, 
         gpus=1 if torch.cuda.is_available() else 0,
         log_every_n_steps=1,
+        max_epochs=21,
         callbacks=[checkpoint_callback, lr_monitor],
         logger=logger
     )
