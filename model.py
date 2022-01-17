@@ -228,7 +228,7 @@ class Transformer(nn.Module):
         )
 
         src_embedding = self.src_embedding(src)
-        bert_embedding = self.bert(src_bert).last_hidden_state.detach()
+        bert_embedding = self.bert(src_bert).last_hidden_state.detach() if self.bert is not None else None
         encoder_out = self.encoder(src_embedding, bert_embedding, padding_mask=src_padding_mask)
 
         preds = torch.tensor([0], device=src.device).repeat(src.size(0), 1) # [batch_size, current_len]
