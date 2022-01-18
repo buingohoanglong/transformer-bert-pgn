@@ -15,7 +15,7 @@ from pytorch_lightning.loggers import TensorBoardLogger
 def main():
     annotator = VnCoreNLP(address="http://127.0.0.1", port=9000)
     tokenizer = AutoTokenizer.from_pretrained("vinai/phobert-base", use_fast=False)
-    # phobert = AutoModel.from_pretrained("vinai/phobert-base")
+    phobert = AutoModel.from_pretrained("vinai/phobert-base")
 
     # load dictionary
     dictionary = Dictionary(tokenizer=tokenizer)
@@ -48,8 +48,8 @@ def main():
         num_heads=8, 
         num_layers=6, 
         dropout=0.1,
-        bert=None,
-        d_bert=None,
+        bert=phobert,
+        d_bert=768,
         use_pgn=True,
         use_ner=True,
         max_src_len=256,
