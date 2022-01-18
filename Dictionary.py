@@ -99,30 +99,3 @@ class Dictionary():
             return self.tokenizer.tokenize(text)
         else:
             return text.strip().split(" ")
-
-def preprocess(annotator, text, ner=False):
-    text = text.replace('\xa0', ' ').strip()
-    sentences = annotator.ner(text) if ner else annotator.tokenize(text)
-    segments = []
-    for s in sentences:
-        segments.extend(s)
-    if len(segments) == 0:
-        return {'words': [], 'name_entities': []} if ner else {'words': []}
-    if ner:
-        words, name_entities = zip(*segments)
-        return {
-            'words': words,
-            'name_entities': name_entities
-        }
-    else:
-        return {'words': segments}
-
-
-def build_vocab(dictionary, segmenter, file_path):
-    with open(file_path, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-        for line_tmp in lines:
-            line = " ".join(preprocess(segmenter, line_tmp.strip())['words'])
-            tokens = dictionary.tokenize(line)
-            for t in tokens:
-                dictionary.add_token(t)
