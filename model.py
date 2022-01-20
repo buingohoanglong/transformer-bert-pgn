@@ -223,6 +223,7 @@ class Transformer(nn.Module):
                 assert (src_ext is not None) and (max_oov_len is not None)
                 assert src_ext.size() == src.size()
                 assert max_oov_len >= 0
+            device = src.device
             origin_vocab_size = self.tgt_embedding.embedding.num_embeddings
             batch_size = src.shape[0]
             preds = torch.zeros(batch_size, 1, device=src.device).long() # [batch_size, current_len (=1)]
@@ -260,12 +261,12 @@ class Transformer(nn.Module):
                 for y, encoder_out, bert_embedding, src_padding_mask, special_token_mask, src_ext in iter(loader): # [batch_size, src_seq_len], [batch_size, current_len]
                     next_probs.append(
                         self._decode_step(
-                            tgt=y, 
-                            encoder_out=encoder_out,
-                            bert_embedding=bert_embedding, 
-                            src_padding_mask=src_padding_mask,
-                            special_token_mask=special_token_mask, 
-                            src_ext=src_ext, 
+                            tgt=y.to(device), 
+                            encoder_out=encoder_out.to(device),
+                            bert_embedding=bert_embedding.to(device), 
+                            src_padding_mask=src_padding_mask.to(device),
+                            special_token_mask=special_token_mask.to(device), 
+                            src_ext=src_ext.to(device), 
                             max_oov_len=max_oov_len
                         )[:, -1, :].log()
                     ) # [batch_size, vocab_size]
