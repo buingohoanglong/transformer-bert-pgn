@@ -263,10 +263,10 @@ class Transformer(nn.Module):
                         self._decode_step(
                             tgt=y.to(device), 
                             encoder_out=encoder_out.to(device),
-                            bert_embedding=bert_embedding.to(device), 
-                            src_padding_mask=src_padding_mask.to(device),
-                            special_token_mask=special_token_mask.to(device), 
-                            src_ext=src_ext.to(device), 
+                            bert_embedding=bert_embedding.to(device) if bert_embedding is not None else None, 
+                            src_padding_mask=src_padding_mask.to(device) if src_padding_mask is not None else None,
+                            special_token_mask=special_token_mask.to(device) if special_token_mask is not None else None, 
+                            src_ext=src_ext.to(device) if src_ext is not None else None, 
                             max_oov_len=max_oov_len
                         )[:, -1, :].log()
                     ) # [batch_size, vocab_size]
