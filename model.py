@@ -226,7 +226,7 @@ class Transformer(nn.Module):
             device = src.device
             origin_vocab_size = self.tgt_embedding.embedding.num_embeddings
             batch_size = src.shape[0]
-            preds = torch.zeros(batch_size, 1, device=src.device).long() # [batch_size, current_len (=1)]
+            preds = torch.zeros(batch_size, 1, device=device).long() # [batch_size, current_len (=1)]
             encode_states = self._encode_step(src=src, src_bert=src_bert, src_ne=src_ne)
             next_probs = self._decode_step(
                 tgt=preds, 
@@ -277,7 +277,7 @@ class Transformer(nn.Module):
                 seq_probs, idx = seq_probs.topk(k=beam_size, axis=-1) # [batch_size, beam_size], [batch_size, beam_size]
                 next_tokens = torch.remainder(idx, vocab_size).flatten().unsqueeze(-1) # [batch_size * beam_size, 1]
                 best_candidates = (idx / vocab_size).long() # [batch_size, beam_size]
-                best_candidates += torch.arange(preds.shape[0] // beam_size).unsqueeze(-1) * beam_size # [batch_size, beam_size]
+                best_candidates += torch.arange(preds.shape[0] // beam_size, device=device).unsqueeze(-1) * beam_size # [batch_size, beam_size]
                 preds = preds[best_candidates].flatten(end_dim=-2) # [batch_size * beam_size, current_len]
                 preds = torch.cat((preds, next_tokens), axis=1) # [batch_size * beam_size, current_len + 1]
                 tgt = torch.where(
@@ -293,7 +293,7 @@ class Transformer(nn.Module):
                         break
             preds = preds.reshape(-1, beam_size, preds.shape[-1]) # [batch_size, beam_size, tgt_seq_len]
             seq_probs, index = seq_probs.max(dim=-1) # [batch_size, ], [batch_size, ]
-            preds = preds[torch.arange(preds.shape[0]).unsqueeze(-1), index.unsqueeze(1)].squeeze() # [batch_size, tgt_seq_len]
+            preds = preds[torch.arange(preds.shape[0], device=device).unsqueeze(-1), index.unsqueeze(1)].squeeze() # [batch_size, tgt_seq_len]
             return {
                 'preds': preds, 
                 'seq_probs': seq_probs
