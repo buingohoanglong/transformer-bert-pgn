@@ -12,7 +12,7 @@ import re
 from nltk.translate.bleu_score import corpus_bleu
 
 class NMT(pl.LightningModule):
-    def __init__(self, dictionary, tokenizer, annotator, criterion, d_model, d_ff, num_heads, num_layers, dropout, bert, d_bert, use_pgn=False, use_ner=False, max_src_len=256, max_tgt_len=256):
+    def __init__(self, dictionary, tokenizer, annotator, criterion, d_model, d_ff, num_heads, num_layers, dropout, bert=None, d_bert=None, use_pgn=False, use_ner=False, max_src_len=256, max_tgt_len=256):
         super(NMT, self).__init__()
         self.dictionary = dictionary
         self.tokenizer = tokenizer
@@ -138,9 +138,11 @@ class NMT(pl.LightningModule):
         return format(seq)
 
 class Transformer(nn.Module):
-    def __init__(self, vocab_size, d_model, d_ff, num_heads, num_layers, dropout, bert, d_bert, 
+    def __init__(self, vocab_size, d_model, d_ff, num_heads, num_layers, dropout, bert=None, d_bert=None, 
                 padding_idx=None, unk_idx=None, use_pgn=False, use_ner=False):
         super(Transformer, self).__init__()
+        if bert is None:
+            assert d_bert is None
         self.src_embedding = Embedding(vocab_size=vocab_size, d_model=d_model, dropout=dropout, padding_idx=padding_idx)
         self.tgt_embedding = Embedding(vocab_size=vocab_size, d_model=d_model, dropout=dropout, padding_idx=padding_idx)
         self.encoder = Encoder(d_model=d_model, d_ff=d_ff, num_heads=num_heads, num_layers=num_layers, dropout=dropout, d_bert=d_bert)
@@ -151,7 +153,7 @@ class Transformer(nn.Module):
         self.unk_idx = unk_idx
         self.use_pgn = use_pgn
         self.use_ner = use_ner
-        self.pointer_generator = PointerGeneratorNetwork(d_model=d_model, dropout=dropout)
+        self.pointer_generator = PointerGeneratorNetwork(d_model=d_model, dropout=dropout) if use_pgn else None
 
     def forward(self, src, tgt, src_bert, src_ext=None, src_ne=None, max_oov_len=None):
         """
@@ -182,7 +184,7 @@ class Transformer(nn.Module):
         )
 
         src_embedding = self.src_embedding(src)
-        bert_embedding = self.bert(src_bert).last_hidden_state.detach()
+        bert_embedding = self.bert(src_bert).last_hidden_state.detach() if self.bert is not None else None
         encoder_out = self.encoder(src_embedding, bert_embedding, padding_mask=src_padding_mask)
 
         tgt_embedding = self.tgt_embedding(tgt)
@@ -308,7 +310,7 @@ class Transformer(nn.Module):
         ) # [batch_size, 1, src_seq_len]
 
         src_embedding = self.src_embedding(src) # [batch_size, src_seq_len, d_model]
-        bert_embedding = self.bert(src_bert).last_hidden_state.detach() # [batch_size, src_seq_len, d_bert]
+        bert_embedding = self.bert(src_bert).last_hidden_state.detach() if self.bert is not None else None # [batch_size, bert_seq_len, d_bert]
         encoder_out = self.encoder(src_embedding, bert_embedding, padding_mask=src_padding_mask) # [batch_size, src_seq_len, d_model]
 
         return {
@@ -398,28 +400,28 @@ class PointerGeneratorNetwork(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, d_model, d_ff, num_heads, num_layers, dropout, d_bert):
+    def __init__(self, d_model, d_ff, num_heads, num_layers, dropout, d_bert=None):
         super(Encoder, self).__init__()
         self.encoder_layers = nn.ModuleList([
             EncoderLayer(d_model=d_model, d_ff=d_ff, num_heads=num_heads, dropout=dropout, d_bert=d_bert)
             for _ in range(num_layers)
         ])
 
-    def forward(self, x, bert_embedding, padding_mask=None):
+    def forward(self, x, bert_embedding=None, padding_mask=None):
         for layer in self.encoder_layers:
             x = layer(x, bert_embedding, padding_mask=padding_mask)
         return x
 
 
 class Decoder(nn.Module):
-    def __init__(self, d_model, d_ff, num_heads, num_layers, dropout, d_bert):
+    def __init__(self, d_model, d_ff, num_heads, num_layers, dropout, d_bert=None):
         super(Decoder, self).__init__()
         self.decoder_layers = nn.ModuleList([
             DecoderLayer(d_model=d_model, d_ff=d_ff, num_heads=num_heads, dropout=dropout, d_bert=d_bert)
             for _ in range(num_layers)
         ])
 
-    def forward(self, x, encoder_out, bert_embedding, src_padding_mask=None, tgt_padding_mask=None):
+    def forward(self, x, encoder_out, bert_embedding=None, src_padding_mask=None, tgt_padding_mask=None):
         """
         :param mandatory Tensor[batch_size, tgt_seq_len, d_model] x: embedding of previous decoder layer
         :param mandatory Tensor[batch_size, src_seq_len, d_model] encoder_out: embedding of final encoder layer
@@ -436,7 +438,7 @@ class Decoder(nn.Module):
 
 
 class EncoderLayer(nn.Module):
-    def __init__(self, d_model, d_ff, num_heads, dropout, d_bert, 
+    def __init__(self, d_model, d_ff, num_heads, dropout, d_bert=None, 
         encoder_bert_dropout=True, encoder_bert_mixup=False, encoder_bert_dropout_ratio=0.5):
         """
         :param mandatory int d_model
@@ -447,7 +449,7 @@ class EncoderLayer(nn.Module):
         d_v = d_model // num_heads
         assert d_k * num_heads == d_model and d_v * num_heads == d_model
         self.self_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_model, d_V_in=d_model, d_k=d_k, d_v=d_v, dropout=dropout)
-        self.bert_enc_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_bert, d_V_in=d_bert, d_k=d_k, d_v=d_v, dropout=dropout)
+        self.bert_enc_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_bert, d_V_in=d_bert, d_k=d_k, d_v=d_v, dropout=dropout) if d_bert is not None else None
         self.attention_residual = Residual(d_model=d_model,dropout=dropout)
         self.feed_forward = FeedForward(d_model=d_model, d_ff=d_ff)
         self.feed_forward_residual = Residual(d_model=d_model,dropout=dropout)
@@ -458,16 +460,16 @@ class EncoderLayer(nn.Module):
         assert self.encoder_bert_dropout_ratio >= 0. and self.encoder_bert_dropout_ratio <= 0.5
 
 
-    def forward(self, x, bert_embedding, padding_mask=None):
+    def forward(self, x, bert_embedding=None, padding_mask=None):
         """
         :param Tensor[batch_size, seq_len] x
         :return Tensor[batch_size, seq_len, d_model] position_encoding
         """
         self_attention = self.self_attention(x, x, x, padding_mask=padding_mask)
-        bert_enc_attention = self.bert_enc_attention(x, bert_embedding, bert_embedding, padding_mask=padding_mask)
+        bert_enc_attention = self.bert_enc_attention(x, bert_embedding, bert_embedding, padding_mask=padding_mask) if self.bert_enc_attention is not None else None
         ratios = self.get_ratios()
         bertfused_attention = self.attention_residual(
-            ratios[0]*self_attention + ratios[1]*bert_enc_attention,
+            ratios[0]*self_attention + ratios[1]*bert_enc_attention if bert_enc_attention is not None else self_attention,
             x
         )
 
@@ -492,7 +494,7 @@ class EncoderLayer(nn.Module):
 
 
 class DecoderLayer(nn.Module):
-    def __init__(self, d_model, d_ff, num_heads, dropout, d_bert,
+    def __init__(self, d_model, d_ff, num_heads, dropout, d_bert=None,
         decoder_bert_dropout=True, decoder_bert_mixup=False, decoder_bert_dropout_ratio=0.5):
         """
         :param mandatory int d_model
@@ -505,7 +507,7 @@ class DecoderLayer(nn.Module):
         self.self_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_model, d_V_in=d_model, d_k=d_k, d_v=d_v, dropout=dropout, masking=True)
         self.self_attention_residual = Residual(d_model=d_model,dropout=dropout)
         self.encoder_decoder_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_model, d_V_in=d_model, d_k=d_k, d_v=d_v, dropout=dropout)
-        self.bert_dec_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_bert, d_V_in=d_bert, d_k=d_k, d_v=d_v, dropout=dropout) 
+        self.bert_dec_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_bert, d_V_in=d_bert, d_k=d_k, d_v=d_v, dropout=dropout) if d_bert is not None else None
         self.bertfused_attention_residual = Residual(d_model=d_model,dropout=dropout)
         self.feed_forward = FeedForward(d_model=d_model, d_ff=d_ff)
         self.feed_forward_residual = Residual(d_model=d_model,dropout=dropout)
@@ -515,7 +517,7 @@ class DecoderLayer(nn.Module):
         self.decoder_bert_dropout_ratio = decoder_bert_dropout_ratio
         assert self.decoder_bert_dropout_ratio >= 0. and self.decoder_bert_dropout_ratio <= 0.5
 
-    def forward(self, x, encoder_out, bert_embedding, src_padding_mask=None, tgt_padding_mask=None):
+    def forward(self, x, encoder_out, bert_embedding=None, src_padding_mask=None, tgt_padding_mask=None):
         """
         :param mandatory Tensor[batch_size, tgt_seq_len, d_model] x: embedding of previous decoder layer
         :param mandatory Tensor[batch_size, src_seq_len, d_model] encoder_out: embedding of final encoder layer
@@ -533,10 +535,10 @@ class DecoderLayer(nn.Module):
         )
         bert_dec_attention = self.bert_dec_attention(
             self_attention, bert_embedding, bert_embedding, padding_mask=src_padding_mask
-        )
+        ) if self.bert_dec_attention is not None else None
         ratios = self.get_ratios()
         bertfused_attention = self.bertfused_attention_residual(
-            ratios[0]*enc_dec_attention + ratios[1]*bert_dec_attention,
+            ratios[0]*enc_dec_attention + ratios[1]*bert_dec_attention if bert_dec_attention is not None else enc_dec_attention,
             self_attention
         )
         return self.feed_forward_residual(
