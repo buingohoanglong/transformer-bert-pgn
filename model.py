@@ -1,8 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.data as tud
 import math
 import pytorch_lightning as pl
+from Dataset import NoneableTensorDataset
 from NoamLRScheduler import *
 from utils import process_batch, format, no_accent_vietnamese
 from numpy.random import  uniform
@@ -86,11 +88,16 @@ class NMT(pl.LightningModule):
         )
 
         preds = self.model.inference(
-            input['src'], input['src_bert'], 
-            self.dictionary.token_to_index(self.dictionary.cls_token),
-            self.dictionary.token_to_index(self.dictionary.sep_token),
-            input['src_ext'], input['src_ne'], input['max_oov_len'], self.max_tgt_len
-        )
+            src=input['src'], 
+            src_bert=input['src_bert'], 
+            cls_idx=self.dictionary.token_to_index(self.dictionary.cls_token), 
+            sep_idx=self.dictionary.token_to_index(self.dictionary.sep_token), 
+            src_ext=input['src_ext'], 
+            src_ne=input['src_ne'], 
+            max_oov_len=input['max_oov_len'], 
+            max_tgt_len=self.max_tgt_len,
+            beam_size=5
+        )['preds']
 
         # decode
         preds = preds.tolist()
@@ -212,8 +219,8 @@ class Transformer(nn.Module):
 
         return final_dist
 
-    def inference(self, src, src_bert, cls_idx, sep_idx, src_ext=None, 
-                src_ne=None, max_oov_len=None, max_tgt_len=256):
+    def inference(self, src, src_bert, cls_idx, sep_idx, src_ext=None, src_ne=None,
+                max_oov_len=None, max_tgt_len=256, beam_size=5):
         """
         Arguments:
             src: [batch_size, src_seq_len]
@@ -221,65 +228,140 @@ class Transformer(nn.Module):
             src_ext: [batch_size, src_seq_len]
             max_oov_len: [batch_size, src_seq_len]
         Return:
-            preds: [batch_size, tgt_seq_len, vocab_size]
+            preds: [batch_size, tgt_seq_len]
+            seq_probs: [batch_size, ]
         """
-        if self.use_pgn:
-            assert (src_ext is not None) and (max_oov_len is not None)
-            assert src_ext.size() == src.size()
-            assert max_oov_len >= 0
+        with torch.no_grad():
+            if self.use_pgn:
+                assert (src_ext is not None) and (max_oov_len is not None)
+                assert src_ext.size() == src.size()
+                assert max_oov_len >= 0
+            device = src.device
+            origin_vocab_size = self.tgt_embedding.embedding.num_embeddings
+            batch_size = src.shape[0]
+            preds = torch.tensor([cls_idx], device=device).repeat(batch_size, 1) # [batch_size, current_len (=1)]
+            encode_states = self._encode_step(src=src, src_bert=src_bert, src_ne=src_ne)
+            next_probs = self._decode_step(
+                tgt=preds, 
+                encoder_out=encode_states['encoder_out'],
+                bert_embedding=encode_states['bert_embedding'], 
+                src_padding_mask=encode_states['src_padding_mask'],
+                bert_padding_mask=encode_states['bert_padding_mask'],
+                special_token_mask=encode_states['special_token_mask'], 
+                src_ext=src_ext, 
+                max_oov_len=max_oov_len
+            )[:, -1, :] # [batch_size, vocab_size]
+            vocab_size = next_probs.shape[-1] # origin_vocab_size + max_oov_len
+            seq_probs, next_tokens = next_probs.squeeze().log().topk(k=beam_size, axis=-1) # [batch_size, beam_size], [batch_size, beam_size]
+            preds = preds.repeat((beam_size, 1)) # [batch_size * beam_size, current_len (=1)]
+            next_tokens = next_tokens.reshape(-1, 1) # [batch_size * beam_size, 1]
+            preds = torch.cat((preds, next_tokens), axis=-1) # [batch_size * beam_size, current_len (=2)]
+            tgt = torch.where(
+                preds < origin_vocab_size, 
+                preds, 
+                self.unk_idx
+            ) # [batch_size * beam_size, current_len (=2)]
+            for _ in range(max_tgt_len - 1):
+                dataset = NoneableTensorDataset(
+                    tgt, 
+                    encode_states['encoder_out'].repeat_interleave(beam_size, dim=0),
+                    encode_states['bert_embedding'].repeat_interleave(beam_size, dim=0) if encode_states['bert_embedding'] is not None else None, 
+                    encode_states['src_padding_mask'].repeat_interleave(beam_size, dim=0) if encode_states['src_padding_mask'] is not None else None,
+                    encode_states['bert_padding_mask'].repeat_interleave(beam_size, dim=0) if encode_states['bert_padding_mask'] is not None else None,
+                    encode_states['special_token_mask'].repeat_interleave(beam_size, dim=0) if encode_states['special_token_mask'] is not None else None, 
+                    src_ext.repeat_interleave(beam_size, dim=0) if src_ext is not None else None
+                )
+                loader = tud.DataLoader(dataset, batch_size=batch_size, collate_fn=NoneableTensorDataset.collate_function)
+                next_probs = []
+                for y, encoder_out, bert_embedding, src_padding_mask, bert_padding_mask, special_token_mask, src_ext in iter(loader): # [batch_size, src_seq_len], [batch_size, current_len]
+                    next_probs.append(
+                        self._decode_step(
+                            tgt=y.to(device), 
+                            encoder_out=encoder_out.to(device),
+                            bert_embedding=bert_embedding.to(device) if bert_embedding is not None else None, 
+                            src_padding_mask=src_padding_mask.to(device) if src_padding_mask is not None else None,
+                            bert_padding_mask=bert_padding_mask.to(device) if bert_padding_mask is not None else None,
+                            special_token_mask=special_token_mask.to(device) if special_token_mask is not None else None, 
+                            src_ext=src_ext.to(device) if src_ext is not None else None, 
+                            max_oov_len=max_oov_len
+                        )[:, -1, :].log()
+                    ) # [batch_size, vocab_size]
+                next_probs = torch.cat(next_probs, axis=0) # [batch_size * beam_size, vocab_size]
+                next_probs = next_probs.reshape((-1, beam_size, next_probs.shape[-1])) # [batch_size, beam_size, vocab_size]
+                seq_probs = seq_probs.unsqueeze(-1) + next_probs # [batch_size, beam_size, vocab_size]
+                seq_probs = seq_probs.flatten(start_dim=1) # [batch_size, beam_size * vocab_size]
+                seq_probs, idx = seq_probs.topk(k=beam_size, axis=-1) # [batch_size, beam_size], [batch_size, beam_size]
+                next_tokens = torch.remainder(idx, vocab_size).flatten().unsqueeze(-1) # [batch_size * beam_size, 1]
+                best_candidates = (idx / vocab_size).long() # [batch_size, beam_size]
+                best_candidates += torch.arange(preds.shape[0] // beam_size, device=device).unsqueeze(-1) * beam_size # [batch_size, beam_size]
+                preds = preds[best_candidates].flatten(end_dim=-2) # [batch_size * beam_size, current_len]
+                preds = torch.cat((preds, next_tokens), axis=1) # [batch_size * beam_size, current_len + 1]
+                tgt = torch.where(
+                    preds < origin_vocab_size, 
+                    preds, 
+                    self.unk_idx
+                ) # [batch_size * beam_size, current_len + 1]
 
-        src_padding_mask = src.eq(self.padding_idx).unsqueeze(1) if self.padding_idx is not None else None
-        bert_padding_mask = src_bert.eq(self.bert_padding_idx).unsqueeze(1) if self.bert_padding_idx is not None else None
+                # early stopping
+                if sep_idx is not None:
+                    early_stopping = torch.all(preds.eq(sep_idx).sum(dim=-1)).item()
+                    if early_stopping:
+                        break
+            preds = preds.reshape(-1, beam_size, preds.shape[-1]) # [batch_size, beam_size, tgt_seq_len]
+            seq_probs, index = seq_probs.max(dim=-1) # [batch_size, ], [batch_size, ]
+            preds = preds[torch.arange(preds.shape[0], device=device).unsqueeze(-1), index.unsqueeze(1)].squeeze() # [batch_size, tgt_seq_len]
+            return {
+                'preds': preds, 
+                'seq_probs': seq_probs
+            }
+
+
+    def _encode_step(self, src, src_bert, src_ne=None):
+        src_padding_mask = src.eq(self.padding_idx).unsqueeze(1) if self.padding_idx is not None else None # [batch_size, 1, src_seq_len]
+        bert_padding_mask = src_bert.eq(self.bert_padding_idx).unsqueeze(1) if self.bert_padding_idx is not None else None # [batch_size, 1, bert_seq_len]
         special_token_mask = self._special_token_mask(
             unk_mask=src.eq(self.unk_idx).unsqueeze(1) if self.unk_idx is not None else None,
             ne_mask=src_ne.unsqueeze(1) if self.use_ner else None
-        )
+        ) # [batch_size, 1, src_seq_len]
 
-        src_embedding = self.src_embedding(src)
-        bert_embedding = self.bert(src_bert).last_hidden_state.detach()
+        src_embedding = self.src_embedding(src) # [batch_size, src_seq_len, d_model]
+        bert_embedding = self.bert(src_bert).last_hidden_state.detach() # [batch_size, bert_seq_len, d_bert]
         encoder_out = self.encoder(
             src_embedding, bert_embedding, 
             src_padding_mask=src_padding_mask, bert_padding_mask=bert_padding_mask
+        ) # [batch_size, src_seq_len, d_model]
+
+        return {
+            'src_padding_mask': src_padding_mask,
+            'bert_padding_mask': bert_padding_mask,
+            'special_token_mask': special_token_mask,
+            'encoder_out': encoder_out,
+            'bert_embedding': bert_embedding
+        }
+
+    def _decode_step(self, tgt, encoder_out, bert_embedding, src_padding_mask=None, bert_padding_mask=None, 
+                    special_token_mask=None, src_ext=None, max_oov_len=None):
+        tgt_embedding = self.tgt_embedding(tgt)
+        tgt_padding_mask = tgt.eq(self.padding_idx).unsqueeze(1) if self.padding_idx is not None else None
+        decoder_out = self.decoder(
+            tgt_embedding, encoder_out, bert_embedding, 
+            src_padding_mask=src_padding_mask, bert_padding_mask=bert_padding_mask, tgt_padding_mask=tgt_padding_mask
         )
 
-        preds = torch.tensor([cls_idx], device=src.device).repeat(src.size(0), 1) # [batch_size, current_len]
-        tgt = preds.detach().clone()
-        for _ in range(max_tgt_len - 1):
-            tgt_embedding = self.tgt_embedding(tgt)
-            tgt_padding_mask = tgt.eq(self.padding_idx).unsqueeze(1) if self.padding_idx is not None else None
-            decoder_out = self.decoder(
-                tgt_embedding, encoder_out, bert_embedding, 
-                src_padding_mask=src_padding_mask, bert_padding_mask=bert_padding_mask, tgt_padding_mask=tgt_padding_mask
-            )
+        vocab_dist = F.softmax(self.linear(decoder_out), dim=-1)
 
-            vocab_dist = F.softmax(self.linear(decoder_out), dim=-1)
+        final_dist = self.pointer_generator(
+            encoder_out=encoder_out, 
+            decoder_out=decoder_out, 
+            vocab_dist=vocab_dist,
+            decoder_in=tgt_embedding, 
+            src_ext=src_ext, 
+            max_oov_len=max_oov_len, 
+            padding_mask=src_padding_mask, 
+            special_token_mask=special_token_mask
+        ) if self.use_pgn else vocab_dist # [batch_size, tgt_seq_len, vocab_size]
 
-            final_dist = self.pointer_generator(
-                encoder_out=encoder_out, 
-                decoder_out=decoder_out, 
-                vocab_dist=vocab_dist,
-                decoder_in=tgt_embedding, 
-                src_ext=src_ext, 
-                max_oov_len=max_oov_len, 
-                padding_mask=src_padding_mask, 
-                special_token_mask=special_token_mask
-            ) if self.use_pgn else vocab_dist # [batch_size, tgt_seq_len, vocab_size]
-            
-            values, ids = torch.max(final_dist, dim=-1)
-            preds = torch.cat([preds,ids[:,-1].unsqueeze(1)],dim=-1)
-            # map oov to unk before feed to next timestep
-            vocab_size = self.tgt_embedding.embedding.num_embeddings
-            tgt = torch.where(
-                preds < vocab_size, 
-                preds, 
-                self.unk_idx
-            )
-
-            if sep_idx is not None:
-                early_stopping = torch.all(preds.eq(sep_idx).sum(dim=-1)).item()
-                if early_stopping:
-                    break
-        return preds
+        return final_dist
 
     def _special_token_mask(self, unk_mask=None, ne_mask=None):
         """
