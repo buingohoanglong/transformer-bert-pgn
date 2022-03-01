@@ -1,5 +1,5 @@
 import torch
-from Dictionary import Dictionary, preprocess
+from Dictionary import Dictionary
 from torch.nn.utils.rnn import pad_sequence
 import re
 
@@ -103,7 +103,7 @@ def ner_for_bpe(bpe_tokens, ne_tokens, get_mask=False, special_tokens=None):
         else:
             value = ne_tokens[idx]
             if get_mask:
-                if value in ['B-PER', 'I-PER', 'B-LOC', 'I-LOC', 'B-ORG', 'I-ORG']:
+                if value in ['B-PER', 'I-PER', 'B-LOC', 'I-LOC', 'B-ORG', 'I-ORG', 'B-NOS']:
                     value = 1
                 else:
                     value = 0
@@ -111,6 +111,44 @@ def ner_for_bpe(bpe_tokens, ne_tokens, get_mask=False, special_tokens=None):
                 idx += 1
         ne_tokens_ext.append(value)
     return ne_tokens_ext
+
+
+def preprocess(annotator, text, ner=False):
+    text = text.replace('\xa0', ' ').strip()
+    sentences = annotator.ner(text) if ner else annotator.tokenize(text)
+    segments = []
+    for s in sentences:
+        segments.extend(s)
+    if len(segments) == 0:
+        return {'words': [], 'name_entities': []} if ner else {'words': []}
+    
+    if ner:
+        words = []
+        name_entities = []
+        signs = ['.', ',', ';', '?', '!', '(', ')', '-', '/', '\\', '\"', '%', '\'', '{', '}', '[', ']']
+        for w, ne in segments:
+            if w in signs or bool(re.search(r'\d', w)):
+                if ne not in ['B-PER', 'I-PER', 'B-LOC', 'I-LOC', 'B-ORG', 'I-ORG']:
+                    ne = 'B-NOS'
+            words.append(w)
+            name_entities.append(ne)
+        return {
+            'words': words,
+            'name_entities': name_entities
+        }
+    else:
+        return {'words': segments}
+    
+
+
+def build_vocab(dictionary, segmenter, file_path):
+    with open(file_path, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+        for line_tmp in lines:
+            line = " ".join(preprocess(segmenter, line_tmp.strip())['words'])
+            tokens = dictionary.tokenize(line)
+            for t in tokens:
+                dictionary.add_token(t)
         
 
 def no_accent_vietnamese(s):
