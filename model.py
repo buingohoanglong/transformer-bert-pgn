@@ -10,7 +10,9 @@ import re
 from nltk.translate.bleu_score import corpus_bleu
 
 class NMT(pl.LightningModule):
-    def __init__(self, dictionary, tokenizer, annotator, criterion, d_model, d_ff, num_heads, num_layers, dropout, bert=None, d_bert=None, use_pgn=False, use_ner=False, max_src_len=256, max_tgt_len=256):
+    def __init__(self, dictionary, tokenizer, annotator, criterion, d_model, d_ff, num_heads, num_layers, 
+                dropout, pe=None, d_pe=None, pd=None, 
+                d_pd=None, use_pgn=False, use_ner=False, max_src_len=256, max_tgt_len=256):
         super(NMT, self).__init__()
         self.dictionary = dictionary
         self.tokenizer = tokenizer
@@ -23,8 +25,10 @@ class NMT(pl.LightningModule):
             num_heads=num_heads,
             num_layers=num_layers,
             dropout=dropout,
-            bert=bert,
-            d_bert=d_bert, 
+            pe=pe,
+            d_pe=d_pe, 
+            pd=pd,
+            d_pd=d_pd, 
             padding_idx=self.dictionary.token_to_index(self.dictionary.pad_token), 
             unk_idx=self.dictionary.token_to_index(self.dictionary.unk_token),
             use_pgn=use_pgn,
@@ -41,7 +45,9 @@ class NMT(pl.LightningModule):
         )
 
         output = self.model(
-            input['src'], input['tgt'][:,:-1], input['src_bert'], input['src_ext'], input['src_ne'], input['max_oov_len']
+            input['src'], input['tgt'][:,:-1], 
+            input['pe_input'], input['pd_input'],
+            input['src_ext'], input['src_ne'], input['max_oov_len']
         )  # [batch_size, seq_len, vocab_size] 
 
         tgt = input['tgt_ext'] if self.model.use_pgn else input['tgt']
@@ -65,8 +71,10 @@ class NMT(pl.LightningModule):
         )
         
         output = self.model(
-            input['src'], input['tgt'][:,:-1], input['src_bert'], input['src_ext'], input['src_ne'], input['max_oov_len']
-        )  # [batch_size, seq_len, vocab_size] 
+            input['src'], input['tgt'][:,:-1], 
+            input['pe_input'], input['pd_input'],
+            input['src_ext'], input['src_ne'], input['max_oov_len']
+        )  # [batch_size, seq_len, vocab_size]
 
         tgt = input['tgt_ext'] if self.model.use_pgn else input['tgt']
         loss = self.criterion(output, tgt[:,1:]) 
@@ -85,7 +93,8 @@ class NMT(pl.LightningModule):
         )
 
         preds = self.model.inference(
-            input['src'], input['src_bert'], input['src_ext'], input['src_ne'], input['max_oov_len'], 
+            input['src'], input['pe_input'], input['pd_input'],
+            input['src_ext'], input['src_ne'], input['max_oov_len'], 
             self.max_tgt_len, self.dictionary.token_to_index(self.dictionary.eos_token)
         )
 
@@ -136,29 +145,34 @@ class NMT(pl.LightningModule):
         return format(seq)
 
 class Transformer(nn.Module):
-    def __init__(self, vocab_size, d_model, d_ff, num_heads, num_layers, dropout, bert=None, d_bert=None, 
+    def __init__(self, vocab_size, d_model, d_ff, num_heads, num_layers, dropout, 
+                pe=None, d_pe=None, 
+                pd=None, d_pd=None, 
                 padding_idx=None, unk_idx=None, use_pgn=False, use_ner=False):
         super(Transformer, self).__init__()
-        if bert is None:
-            assert d_bert is None
+        if pe is None:
+            assert d_pe is None
+        if pd is None:
+            assert d_pd is None
         self.src_embedding = Embedding(vocab_size=vocab_size, d_model=d_model, dropout=dropout, padding_idx=padding_idx)
         self.tgt_embedding = Embedding(vocab_size=vocab_size, d_model=d_model, dropout=dropout, padding_idx=padding_idx)
-        self.encoder = Encoder(d_model=d_model, d_ff=d_ff, num_heads=num_heads, num_layers=num_layers, dropout=dropout, d_bert=d_bert)
-        self.decoder = Decoder(d_model=d_model, d_ff=d_ff, num_heads=num_heads, num_layers=num_layers, dropout=dropout, d_bert=d_bert)
+        self.encoder = Encoder(d_model=d_model, d_ff=d_ff, num_heads=num_heads, num_layers=num_layers, dropout=dropout, d_pe=d_pe)
+        self.decoder = Decoder(d_model=d_model, d_ff=d_ff, num_heads=num_heads, num_layers=num_layers, dropout=dropout, d_pe=d_pe, d_pd=d_pd)
         self.linear = Linear(d_model, vocab_size)
-        self.bert = bert
+        self.pe = pe
+        self.pd = pd
         self.padding_idx = padding_idx
         self.unk_idx = unk_idx
         self.use_pgn = use_pgn
         self.use_ner = use_ner
         self.pointer_generator = PointerGeneratorNetwork(d_model=d_model, dropout=dropout) if use_pgn else None
 
-    def forward(self, src, tgt, src_bert, src_ext=None, src_ne=None, max_oov_len=None):
+    def forward(self, src, tgt, pe_input, pd_input, src_ext=None, src_ne=None, max_oov_len=None):
         """
         Arguments:
             src: [batch_size, src_seq_len] mandatory: index of source tokens
             tgt: [batch_size, tgt_seq_len] mandatory: index of target tokens
-            src_bert: [batch_size, src_seq_len] mandatory: index of source bert tokens
+            pe_input: [batch_size, src_seq_len] mandatory: index of source pe tokens
             src_ext: [batch_size, src_seq_len] optional: index of source tokens in extend vocab
             src_ne: [batch_size, src_seq_len] optional: name entity mask (1s for name entities, 0s otherwise)
             max_oov_len: int optional: number of oov in current batch
@@ -182,12 +196,13 @@ class Transformer(nn.Module):
         )
 
         src_embedding = self.src_embedding(src)
-        bert_embedding = self.bert(src_bert).last_hidden_state.detach() if self.bert is not None else None
-        encoder_out = self.encoder(src_embedding, bert_embedding, padding_mask=src_padding_mask)
+        pe_out = self.pe(pe_input).last_hidden_state.detach() if self.pe is not None else None
+        pd_out = self.pd(pd_input).last_hidden_state.detach() if self.pd is not None else None
+        encoder_out = self.encoder(src_embedding, pe_out, padding_mask=src_padding_mask)
 
         tgt_embedding = self.tgt_embedding(tgt)
         decoder_out = self.decoder(
-            tgt_embedding, encoder_out, bert_embedding, 
+            tgt_embedding, encoder_out, pe_out, pd_out,
             src_padding_mask=src_padding_mask, tgt_padding_mask=tgt_padding_mask
         )
 
@@ -206,11 +221,12 @@ class Transformer(nn.Module):
 
         return final_dist
 
-    def inference(self, src, src_bert, src_ext=None, src_ne=None, max_oov_len=None, max_tgt_len=256, eos_idx=None):
+    def inference(self, src, pe_input, pd_input, 
+                src_ext=None, src_ne=None, max_oov_len=None, max_tgt_len=256, eos_idx=None):
         """
         Arguments:
             src: [batch_size, src_seq_len]
-            src_bert: [batch_size, src_seq_len]
+            pe_input: [batch_size, src_seq_len]
             src_ext: [batch_size, src_seq_len]
             max_oov_len: [batch_size, src_seq_len]
         Return:
@@ -228,8 +244,9 @@ class Transformer(nn.Module):
         )
 
         src_embedding = self.src_embedding(src)
-        bert_embedding = self.bert(src_bert).last_hidden_state.detach() if self.bert is not None else None
-        encoder_out = self.encoder(src_embedding, bert_embedding, padding_mask=src_padding_mask)
+        pe_out = self.pe(pe_input).last_hidden_state.detach() if self.pe is not None else None
+        pd_out = self.pd(pd_input).last_hidden_state.detach() if self.pd is not None else None
+        encoder_out = self.encoder(src_embedding, pe_out, padding_mask=src_padding_mask)
 
         preds = torch.tensor([0], device=src.device).repeat(src.size(0), 1) # [batch_size, current_len]
         tgt = preds.detach().clone()
@@ -237,7 +254,7 @@ class Transformer(nn.Module):
             tgt_embedding = self.tgt_embedding(tgt)
             tgt_padding_mask = tgt.eq(self.padding_idx).unsqueeze(1) if self.padding_idx is not None else None
             decoder_out = self.decoder(
-                tgt_embedding, encoder_out, bert_embedding, 
+                tgt_embedding, encoder_out, pe_out, pd_out,
                 src_padding_mask=src_padding_mask, tgt_padding_mask=tgt_padding_mask
             )
 
@@ -326,46 +343,46 @@ class PointerGeneratorNetwork(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, d_model, d_ff, num_heads, num_layers, dropout, d_bert=None):
+    def __init__(self, d_model, d_ff, num_heads, num_layers, dropout, d_pe=None):
         super(Encoder, self).__init__()
         self.encoder_layers = nn.ModuleList([
-            EncoderLayer(d_model=d_model, d_ff=d_ff, num_heads=num_heads, dropout=dropout, d_bert=d_bert)
+            EncoderLayer(d_model=d_model, d_ff=d_ff, num_heads=num_heads, dropout=dropout, d_pe=d_pe)
             for _ in range(num_layers)
         ])
 
-    def forward(self, x, bert_embedding=None, padding_mask=None):
+    def forward(self, x, pe_out=None, padding_mask=None):
         for layer in self.encoder_layers:
-            x = layer(x, bert_embedding, padding_mask=padding_mask)
+            x = layer(x, pe_out, padding_mask=padding_mask)
         return x
 
 
 class Decoder(nn.Module):
-    def __init__(self, d_model, d_ff, num_heads, num_layers, dropout, d_bert=None):
+    def __init__(self, d_model, d_ff, num_heads, num_layers, dropout, d_pe=None, d_pd=None):
         super(Decoder, self).__init__()
         self.decoder_layers = nn.ModuleList([
-            DecoderLayer(d_model=d_model, d_ff=d_ff, num_heads=num_heads, dropout=dropout, d_bert=d_bert)
+            DecoderLayer(d_model=d_model, d_ff=d_ff, num_heads=num_heads, dropout=dropout, d_pe=d_pe, d_pd=d_pd)
             for _ in range(num_layers)
         ])
 
-    def forward(self, x, encoder_out, bert_embedding=None, src_padding_mask=None, tgt_padding_mask=None):
+    def forward(self, x, encoder_out, pe_out=None, pd_out=None, src_padding_mask=None, tgt_padding_mask=None):
         """
         :param mandatory Tensor[batch_size, tgt_seq_len, d_model] x: embedding of previous decoder layer
         :param mandatory Tensor[batch_size, src_seq_len, d_model] encoder_out: embedding of final encoder layer
-        :param mandatory Tensor[batch_size, src_seq_len, d_bert] bert_embedding: embedding of bert
+        :param mandatory Tensor[batch_size, src_seq_len, d_pe] pe_out: embedding of pe
         :param optional Tensor[batch_size, 1, src_seq_len] src_padding_mask: padding mask for key from decoder
-        :param optional Tensor[batch_size, 1, tgt_seq_len] tgt_padding_mask: padding mask for key from encoder, bert
+        :param optional Tensor[batch_size, 1, tgt_seq_len] tgt_padding_mask: padding mask for key from encoder, pe
         """
         for layer in self.decoder_layers:
             x = layer(
-                x, encoder_out, bert_embedding, 
+                x, encoder_out, pe_out, pd_out,
                 src_padding_mask=src_padding_mask, tgt_padding_mask=tgt_padding_mask
             )
         return x
 
 
 class EncoderLayer(nn.Module):
-    def __init__(self, d_model, d_ff, num_heads, dropout, d_bert=None, 
-        encoder_bert_dropout=True, encoder_bert_mixup=False, encoder_bert_dropout_ratio=0.5):
+    def __init__(self, d_model, d_ff, num_heads, dropout, d_pe=None, 
+        encoder_pe_dropout=True, encoder_pe_mixup=False, encoder_pe_dropout_ratio=0.5):
         """
         :param mandatory int d_model
         :param mandatory int d_ff
@@ -375,43 +392,43 @@ class EncoderLayer(nn.Module):
         d_v = d_model // num_heads
         assert d_k * num_heads == d_model and d_v * num_heads == d_model
         self.self_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_model, d_V_in=d_model, d_k=d_k, d_v=d_v, dropout=dropout)
-        self.bert_enc_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_bert, d_V_in=d_bert, d_k=d_k, d_v=d_v, dropout=dropout) if d_bert is not None else None
+        self.pe_enc_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_pe, d_V_in=d_pe, d_k=d_k, d_v=d_v, dropout=dropout) if d_pe is not None else None
         self.attention_residual = Residual(d_model=d_model,dropout=dropout)
         self.feed_forward = FeedForward(d_model=d_model, d_ff=d_ff)
         self.feed_forward_residual = Residual(d_model=d_model,dropout=dropout)
         
-        self.encoder_bert_dropout = encoder_bert_dropout
-        self.encoder_bert_mixup = encoder_bert_mixup
-        self.encoder_bert_dropout_ratio = encoder_bert_dropout_ratio
-        assert self.encoder_bert_dropout_ratio >= 0. and self.encoder_bert_dropout_ratio <= 0.5
+        self.encoder_pe_dropout = encoder_pe_dropout
+        self.encoder_pe_mixup = encoder_pe_mixup
+        self.encoder_pe_dropout_ratio = encoder_pe_dropout_ratio
+        assert self.encoder_pe_dropout_ratio >= 0. and self.encoder_pe_dropout_ratio <= 0.5
 
 
-    def forward(self, x, bert_embedding=None, padding_mask=None):
+    def forward(self, x, pe_out=None, padding_mask=None):
         """
         :param Tensor[batch_size, seq_len] x
         :return Tensor[batch_size, seq_len, d_model] position_encoding
         """
         self_attention = self.self_attention(x, x, x, padding_mask=padding_mask)
-        bert_enc_attention = self.bert_enc_attention(x, bert_embedding, bert_embedding, padding_mask=padding_mask) if self.bert_enc_attention is not None else None
+        pe_enc_attention = self.pe_enc_attention(x, pe_out, pe_out, padding_mask=padding_mask) if self.pe_enc_attention is not None else None
         ratios = self.get_ratios()
-        bertfused_attention = self.attention_residual(
-            ratios[0]*self_attention + ratios[1]*bert_enc_attention if bert_enc_attention is not None else self_attention,
+        pefused_attention = self.attention_residual(
+            ratios[0]*self_attention + ratios[1]*pe_enc_attention if pe_enc_attention is not None else self_attention,
             x
         )
 
         return self.feed_forward_residual(
-            self.feed_forward(bertfused_attention), 
-            bertfused_attention
+            self.feed_forward(pefused_attention), 
+            pefused_attention
         )
 
     def get_ratios(self):
-        if self.encoder_bert_dropout:
+        if self.encoder_pe_dropout:
             frand = float(uniform(0, 1))
-            if self.encoder_bert_mixup and self.training:
+            if self.encoder_pe_mixup and self.training:
                 return [frand, 1 - frand]
-            if frand < self.encoder_bert_dropout_ratio and self.training:
+            if frand < self.encoder_pe_dropout_ratio and self.training:
                 return [1, 0]
-            elif frand > 1 - self.encoder_bert_dropout_ratio and self.training:
+            elif frand > 1 - self.encoder_pe_dropout_ratio and self.training:
                 return [0, 1]
             else:
                 return [0.5, 0.5]
@@ -420,8 +437,9 @@ class EncoderLayer(nn.Module):
 
 
 class DecoderLayer(nn.Module):
-    def __init__(self, d_model, d_ff, num_heads, dropout, d_bert=None,
-        decoder_bert_dropout=True, decoder_bert_mixup=False, decoder_bert_dropout_ratio=0.5):
+    def __init__(self, d_model, d_ff, num_heads, dropout, d_pe=None, d_pd=None,
+        decoder_pe_dropout=True, decoder_pe_mixup=False, decoder_pe_dropout_ratio=0.5, 
+        decoder_pd_dropout=True, decoder_pd_mixup=False, decoder_pd_dropout_ratio=0.5):
         """
         :param mandatory int d_model
         :param mandatory int d_ff
@@ -431,55 +449,80 @@ class DecoderLayer(nn.Module):
         d_v = d_model // num_heads
         assert d_k * num_heads == d_model and d_v * num_heads == d_model
         self.self_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_model, d_V_in=d_model, d_k=d_k, d_v=d_v, dropout=dropout, masking=True)
-        self.self_attention_residual = Residual(d_model=d_model,dropout=dropout)
+        self.pd_dec_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_pd, d_V_in=d_pd, d_k=d_k, d_v=d_v, dropout=dropout, masking=True)
+        self.pdfused_attention_residual = Residual(d_model=d_model,dropout=dropout)
         self.encoder_decoder_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_model, d_V_in=d_model, d_k=d_k, d_v=d_v, dropout=dropout)
-        self.bert_dec_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_bert, d_V_in=d_bert, d_k=d_k, d_v=d_v, dropout=dropout) if d_bert is not None else None
-        self.bertfused_attention_residual = Residual(d_model=d_model,dropout=dropout)
+        self.pe_dec_attention = MultiHeadAttention(num_heads=num_heads, d_Q_in=d_model, d_K_in=d_pe, d_V_in=d_pe, d_k=d_k, d_v=d_v, dropout=dropout) if d_pe is not None else None
+        self.pefused_attention_residual = Residual(d_model=d_model,dropout=dropout)
         self.feed_forward = FeedForward(d_model=d_model, d_ff=d_ff)
         self.feed_forward_residual = Residual(d_model=d_model,dropout=dropout)
 
-        self.decoder_bert_dropout = decoder_bert_dropout
-        self.decoder_bert_mixup = decoder_bert_mixup
-        self.decoder_bert_dropout_ratio = decoder_bert_dropout_ratio
-        assert self.decoder_bert_dropout_ratio >= 0. and self.decoder_bert_dropout_ratio <= 0.5
+        self.decoder_pe_dropout = decoder_pe_dropout
+        self.decoder_pe_mixup = decoder_pe_mixup
+        self.decoder_pe_dropout_ratio = decoder_pe_dropout_ratio
+        assert self.decoder_pe_dropout_ratio >= 0. and self.decoder_pe_dropout_ratio <= 0.5
 
-    def forward(self, x, encoder_out, bert_embedding=None, src_padding_mask=None, tgt_padding_mask=None):
+        self.decoder_pd_dropout = decoder_pd_dropout
+        self.decoder_pd_mixup = decoder_pd_mixup
+        self.decoder_pd_dropout_ratio = decoder_pd_dropout_ratio
+        assert self.decoder_pd_dropout_ratio >= 0. and self.decoder_pd_dropout_ratio <= 0.5
+
+    def forward(self, x, encoder_out, pe_out=None, pd_out=None, src_padding_mask=None, tgt_padding_mask=None):
         """
         :param mandatory Tensor[batch_size, tgt_seq_len, d_model] x: embedding of previous decoder layer
         :param mandatory Tensor[batch_size, src_seq_len, d_model] encoder_out: embedding of final encoder layer
-        :param mandatory Tensor[batch_size, src_seq_len, d_bert] bert_embedding: embedding of bert
+        :param mandatory Tensor[batch_size, src_seq_len, d_pe] pe_out: embedding of pe
         :param optional Tensor[batch_size, 1, src_seq_len] src_padding_mask: padding mask for key from decoder
-        :param optional Tensor[batch_size, 1, tgt_seq_len] tgt_padding_mask: padding mask for key from encoder, bert
+        :param optional Tensor[batch_size, 1, tgt_seq_len] tgt_padding_mask: padding mask for key from encoder, pe
         """
-        self_attention = self.self_attention_residual(
-            self.self_attention(x, x, x, padding_mask=tgt_padding_mask), 
+        self_attention = self.self_attention(x, x, x, padding_mask=tgt_padding_mask)
+        pd_dec_attention = self.pd_dec_attention(
+            x, pd_out, pd_out, padding_mask=tgt_padding_mask
+        ) if self.pd_dec_attention is not None else None
+        pd_ratios = self.get_pd_ratios()
+        pdfused_attention_residual = self.pdfused_attention_residual(
+            pd_ratios[0]*self_attention + pd_ratios[1]*pd_dec_attention if pd_dec_attention is not None else self_attention, 
             x
         )
 
         enc_dec_attention = self.encoder_decoder_attention(
-            self_attention, encoder_out, encoder_out, padding_mask=src_padding_mask
+            pdfused_attention_residual, encoder_out, encoder_out, padding_mask=src_padding_mask
         )
-        bert_dec_attention = self.bert_dec_attention(
-            self_attention, bert_embedding, bert_embedding, padding_mask=src_padding_mask
-        ) if self.bert_dec_attention is not None else None
-        ratios = self.get_ratios()
-        bertfused_attention = self.bertfused_attention_residual(
-            ratios[0]*enc_dec_attention + ratios[1]*bert_dec_attention if bert_dec_attention is not None else enc_dec_attention,
-            self_attention
+        pe_dec_attention = self.pe_dec_attention(
+            pdfused_attention_residual, pe_out, pe_out, padding_mask=src_padding_mask
+        ) if self.pe_dec_attention is not None else None
+        ratios = self.get_pe_ratios()
+        pefused_attention = self.pefused_attention_residual(
+            ratios[0]*enc_dec_attention + ratios[1]*pe_dec_attention if pe_dec_attention is not None else enc_dec_attention,
+            pdfused_attention_residual
         )
         return self.feed_forward_residual(
-            self.feed_forward(bertfused_attention),
-            bertfused_attention
+            self.feed_forward(pefused_attention),
+            pefused_attention
         )
     
-    def get_ratios(self):
-        if self.decoder_bert_dropout:
+    def get_pe_ratios(self):
+        if self.decoder_pe_dropout:
             frand = float(uniform(0, 1))
-            if self.decoder_bert_mixup and self.training:
+            if self.decoder_pe_mixup and self.training:
                 return [frand, 1 - frand]
-            if frand < self.decoder_bert_dropout_ratio and self.training:
+            if frand < self.decoder_pe_dropout_ratio and self.training:
                 return [1, 0]
-            elif frand > 1 - self.decoder_bert_dropout_ratio and self.training:
+            elif frand > 1 - self.decoder_pe_dropout_ratio and self.training:
+                return [0, 1]
+            else:
+                return [0.5, 0.5]
+        else:
+            return [0.5, 0.5]
+
+    def get_pd_ratios(self):
+        if self.decoder_pd_dropout:
+            frand = float(uniform(0, 1))
+            if self.decoder_pd_mixup and self.training:
+                return [frand, 1 - frand]
+            if frand < self.decoder_pd_dropout_ratio and self.training:
+                return [1, 0]
+            elif frand > 1 - self.decoder_pd_dropout_ratio and self.training:
                 return [0, 1]
             else:
                 return [0.5, 0.5]

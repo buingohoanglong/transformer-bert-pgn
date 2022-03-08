@@ -4,22 +4,34 @@ from utils import ner_for_bpe, preprocess
 from Dictionary import *
 from unicodedata import normalize
 
-annotator = VnCoreNLP(address="http://127.0.0.1", port=9000) 
-tokenizer = AutoTokenizer.from_pretrained("vinai/bartpho-word", use_fast=False)
+# annotator = VnCoreNLP(address="http://127.0.0.1", port=9000) 
+# tokenizer = AutoTokenizer.from_pretrained("vinai/bartpho-word", use_fast=False)
 
-bartpho = AutoModel.from_pretrained("vinai/bartpho-word")
+bartpho = AutoModel.from_pretrained("vinai/phobert-large")
+encoder = bartpho.encoder
+decoder = bartpho.pooler
+embedding = bartpho.embeddings
 
+bartpho_total_params = sum(p.numel() for p in bartpho.parameters())
+encoder_total_params = sum(p.numel() for p in encoder.parameters())
+decoder_total_params = sum(p.numel() for p in decoder.parameters())
+embedding_total_params = sum(p.numel() for p in embedding.parameters())
+
+print(bartpho_total_params)
+print(encoder_total_params)
+print(decoder_total_params)
+print(embedding_total_params)
 # load dictionary
-dictionary = Dictionary(tokenizer=tokenizer)
-dictionary.add_from_file('data/vi-ba/dict-synonymaugment.txt')
-dictionary.build_dictionary()
-print(f'--|Vocab size: {len(dictionary)}')
+# dictionary = Dictionary(tokenizer=tokenizer)
+# dictionary.add_from_file('data/vi-ba/dict-synonymaugment.txt')
+# dictionary.build_dictionary()
+# print(f'--|Vocab size: {len(dictionary)}')
 
 # text = "Ông Nguyễn Khắc Chúc 35 tuổi đang làm việc tại Đại học Quốc gia Hà Nội được 10 năm. Bà Lan 30 tuổi, vợ ông Chúc, cũng làm việc tại đây."
 # text = "Chị gái của Yôl biết rất nhiều chuyện dân tộc Kinh."
-text = "Căn cứ Thông tư liên tịch số 13/2014/TTLT-BYT-BNNPTNT-BCT ngày 09 tháng 4 năm 2014 của Bộ Y tế, Bộ Nông nghiệp và Phát triển nông thôn và Bộ Công Thương về việc chỉ dẫn phân công, kết hợp trong quản lý quốc gia về an toàn thực phẩm;"
+# text = "Căn cứ Thông tư liên tịch số 13/2014/TTLT-BYT-BNNPTNT-BCT ngày 09 tháng 4 năm 2014 của Bộ Y tế, Bộ Nông nghiệp và Phát triển nông thôn và Bộ Công Thương về việc chỉ dẫn phân công, kết hợp trong quản lý quốc gia về an toàn thực phẩm;"
 # text = normalize('NFC', text)
-data = preprocess(annotator, text, ner=True)
+# data = preprocess(annotator, text, ner=True)
 
 # # load dictionary
 # dictionary = Dictionary(tokenizer=tokenizer)
