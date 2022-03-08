@@ -2,6 +2,7 @@ import torch
 from Dictionary import Dictionary
 from torch.nn.utils.rnn import pad_sequence
 import re
+from unicodedata import normalize
 
 def process_batch(batch, dictionary, tokenizer, annotator, 
                 max_src_len=256, use_pgn=False, use_ner=False, device='cpu'):
@@ -114,7 +115,7 @@ def ner_for_bpe(bpe_tokens, ne_tokens, get_mask=False, special_tokens=None):
 
 
 def preprocess(annotator, text, ner=False):
-    text = text.replace('\xa0', ' ').strip()
+    text = normalize('NFC', text).replace('\xa0', ' ').strip()
     sentences = annotator.ner(text) if ner else annotator.tokenize(text)
     segments = []
     for s in sentences:
@@ -153,10 +154,10 @@ def build_vocab(dictionary, segmenter, file_path):
 
 def no_accent_vietnamese(s):
     s = re.sub(r'[àáạảã]', 'a', s)
-    s = re.sub(r'[ấầậẩẫ]', 'â', s)
+    s = re.sub(r'[ấầậẩẫ]', 'a', s) # no â character in Baharic
     s = re.sub(r'[ắằặẳẵ]', 'ă', s)
     s = re.sub(r'[ÀÁẠẢÃ]', 'A', s)
-    s = re.sub(r'[ẦẤẬẨẪ]', 'Â', s)
+    s = re.sub(r'[ẦẤẬẨẪ]', 'Â', s) # no Â character in Baharic
     s = re.sub(r'[ẰẮẶẲẴ]', 'Ă', s)
     s = re.sub(r'[èéẹẻẽ]', 'e', s)
     s = re.sub(r'[ềếệểễ]', 'ê', s)
