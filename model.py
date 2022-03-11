@@ -8,6 +8,7 @@ from utils import process_batch, format, no_accent_vietnamese
 from numpy.random import  uniform
 import re
 from nltk.translate.bleu_score import corpus_bleu
+from unicodedata import normalize
 
 class NMT(pl.LightningModule):
     def __init__(self, dictionary, tokenizer, annotator, criterion, d_model, d_ff, num_heads, num_layers, dropout, bert=None, d_bert=None, use_pgn=False, use_ner=False, max_src_len=256, max_tgt_len=256):
@@ -107,8 +108,8 @@ class NMT(pl.LightningModule):
             print()
 
         # compute bleu
-        candidates = [seq.strip().split() for seq in sequences]
-        references = [[ref.strip().split()] for ref in input['tgt_raw']]
+        candidates = [normalize('NFC', seq).strip().split() for seq in sequences]
+        references = [[normalize('NFC', ref).strip().split()] for ref in input['tgt_raw']]
         bleu = corpus_bleu(references, candidates)
         return {"bleu": bleu}
 
