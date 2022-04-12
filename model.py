@@ -11,8 +11,8 @@ from nltk.translate.bleu_score import corpus_bleu
 
 class NMT(pl.LightningModule):
     def __init__(self, dictionary, tokenizer, annotator, criterion, d_model, d_ff, num_heads, num_layers, 
-                dropout, pe=None, d_pe=None, pd=None, 
-                d_pd=None, use_pgn=False, use_ner=False, max_src_len=256, max_tgt_len=256):
+                dropout, bart=None, d_bart=None, use_pgn=False, use_ner=False, 
+                max_src_len=256, max_tgt_len=256): #TODO separate bart to pe and pd
         super(NMT, self).__init__()
         self.dictionary = dictionary
         self.tokenizer = tokenizer
@@ -25,10 +25,8 @@ class NMT(pl.LightningModule):
             num_heads=num_heads,
             num_layers=num_layers,
             dropout=dropout,
-            pe=pe,
-            d_pe=d_pe, 
-            pd=pd,
-            d_pd=d_pd, 
+            bart=bart,
+            d_bart=d_bart, 
             padding_idx=self.dictionary.token_to_index(self.dictionary.pad_token), 
             unk_idx=self.dictionary.token_to_index(self.dictionary.unk_token),
             use_pgn=use_pgn,
@@ -46,7 +44,7 @@ class NMT(pl.LightningModule):
 
         output = self.model(
             input['src'], input['tgt'][:,:-1], 
-            input['pe_input'], input['pd_input'],
+            input['src_bart'], input['tgt_bart'][:,:-1], #TODO seperate src_bart to pe_input and pd_input
             input['src_ext'], input['src_ne'], input['max_oov_len']
         )  # [batch_size, seq_len, vocab_size] 
 
@@ -72,7 +70,7 @@ class NMT(pl.LightningModule):
         
         output = self.model(
             input['src'], input['tgt'][:,:-1], 
-            input['pe_input'], input['pd_input'],
+            input['src_bart'], input['tgt_bart'][:,:-1], #TODO seperate src_bart to pe_input and pd_input
             input['src_ext'], input['src_ne'], input['max_oov_len']
         )  # [batch_size, seq_len, vocab_size]
 
@@ -93,7 +91,8 @@ class NMT(pl.LightningModule):
         )
 
         preds = self.model.inference(
-            input['src'], input['pe_input'], input['pd_input'],
+            input['src'], input['src_bart'], input['tgt_bart'][:,:-1], #TODO seperate src_bart to pe_input and pd_input
+            self.dictionary, self.tokenizer,
             input['src_ext'], input['src_ne'], input['max_oov_len'], 
             self.max_tgt_len, self.dictionary.token_to_index(self.dictionary.eos_token)
         )
@@ -146,28 +145,24 @@ class NMT(pl.LightningModule):
 
 class Transformer(nn.Module):
     def __init__(self, vocab_size, d_model, d_ff, num_heads, num_layers, dropout, 
-                pe=None, d_pe=None, 
-                pd=None, d_pd=None, 
+                bart=None, d_bart=None, #TODO separate bart to pe and pd
                 padding_idx=None, unk_idx=None, use_pgn=False, use_ner=False):
         super(Transformer, self).__init__()
-        if pe is None:
-            assert d_pe is None
-        if pd is None:
-            assert d_pd is None
+        if bart is None:
+            assert d_bart is None
         self.src_embedding = Embedding(vocab_size=vocab_size, d_model=d_model, dropout=dropout, padding_idx=padding_idx)
         self.tgt_embedding = Embedding(vocab_size=vocab_size, d_model=d_model, dropout=dropout, padding_idx=padding_idx)
-        self.encoder = Encoder(d_model=d_model, d_ff=d_ff, num_heads=num_heads, num_layers=num_layers, dropout=dropout, d_pe=d_pe)
-        self.decoder = Decoder(d_model=d_model, d_ff=d_ff, num_heads=num_heads, num_layers=num_layers, dropout=dropout, d_pe=d_pe, d_pd=d_pd)
+        self.encoder = Encoder(d_model=d_model, d_ff=d_ff, num_heads=num_heads, num_layers=num_layers, dropout=dropout, d_pe=d_bart)
+        self.decoder = Decoder(d_model=d_model, d_ff=d_ff, num_heads=num_heads, num_layers=num_layers, dropout=dropout, d_pe=d_bart, d_pd=d_bart)
         self.linear = Linear(d_model, vocab_size)
-        self.pe = pe
-        self.pd = pd
+        self.bart = bart
         self.padding_idx = padding_idx
         self.unk_idx = unk_idx
         self.use_pgn = use_pgn
         self.use_ner = use_ner
         self.pointer_generator = PointerGeneratorNetwork(d_model=d_model, dropout=dropout) if use_pgn else None
 
-    def forward(self, src, tgt, pe_input, pd_input, src_ext=None, src_ne=None, max_oov_len=None):
+    def forward(self, src, tgt, src_bart, tgt_bart, src_ext=None, src_ne=None, max_oov_len=None):
         """
         Arguments:
             src: [batch_size, src_seq_len] mandatory: index of source tokens
@@ -196,8 +191,8 @@ class Transformer(nn.Module):
         )
 
         src_embedding = self.src_embedding(src)
-        pe_out = self.pe(pe_input).last_hidden_state.detach() if self.pe is not None else None
-        pd_out = self.pd(pd_input).last_hidden_state.detach() if self.pd is not None else None
+        pe_out = self.bart(input_ids=src_bart).encoder_last_hidden_state.detach() if self.bart is not None else None
+        pd_out = self.bart(input_ids=src_bart, decoder_input_ids=tgt_bart).last_hidden_state.detach() if self.bart is not None else None
         encoder_out = self.encoder(src_embedding, pe_out, padding_mask=src_padding_mask)
 
         tgt_embedding = self.tgt_embedding(tgt)
@@ -221,7 +216,7 @@ class Transformer(nn.Module):
 
         return final_dist
 
-    def inference(self, src, pe_input, pd_input, 
+    def inference(self, src, src_bart, dictionary, tokenizer, #TODO separate src_bart to pe_input and pd_input
                 src_ext=None, src_ne=None, max_oov_len=None, max_tgt_len=256, eos_idx=None):
         """
         Arguments:
@@ -244,8 +239,7 @@ class Transformer(nn.Module):
         )
 
         src_embedding = self.src_embedding(src)
-        pe_out = self.pe(pe_input).last_hidden_state.detach() if self.pe is not None else None
-        pd_out = self.pd(pd_input).last_hidden_state.detach() if self.pd is not None else None
+        pe_out = self.bart(input_ids=src_bart).encoder_last_hidden_state.detach() if self.bart is not None else None
         encoder_out = self.encoder(src_embedding, pe_out, padding_mask=src_padding_mask)
 
         preds = torch.tensor([0], device=src.device).repeat(src.size(0), 1) # [batch_size, current_len]
@@ -253,6 +247,10 @@ class Transformer(nn.Module):
         for _ in range(max_tgt_len - 1):
             tgt_embedding = self.tgt_embedding(tgt)
             tgt_padding_mask = tgt.eq(self.padding_idx).unsqueeze(1) if self.padding_idx is not None else None
+            tgt_bart = preds[:,1:].detach().clone().to(device='cpu')
+            tgt_bart.apply_(lambda x: tokenizer._convert_token_to_id(dictionary.index_to_token(x)))
+            tgt_bart = torch.tensor([self.tokenizer.eos_token_id], device=src.device).repeat(tgt_bart.size(0), 1) + tgt_bart.to(device=src.device)
+            pd_out = self.bart(input_ids=src_bart, decoder_input_ids=tgt_bart).last_hidden_state.detach() if self.bart is not None else None
             decoder_out = self.decoder(
                 tgt_embedding, encoder_out, pe_out, pd_out,
                 src_padding_mask=src_padding_mask, tgt_padding_mask=tgt_padding_mask
@@ -491,9 +489,9 @@ class DecoderLayer(nn.Module):
         pe_dec_attention = self.pe_dec_attention(
             pdfused_attention_residual, pe_out, pe_out, padding_mask=src_padding_mask
         ) if self.pe_dec_attention is not None else None
-        ratios = self.get_pe_ratios()
+        pe_ratios = self.get_pe_ratios()
         pefused_attention = self.pefused_attention_residual(
-            ratios[0]*enc_dec_attention + ratios[1]*pe_dec_attention if pe_dec_attention is not None else enc_dec_attention,
+            pe_ratios[0]*enc_dec_attention + pe_ratios[1]*pe_dec_attention if pe_dec_attention is not None else enc_dec_attention,
             pdfused_attention_residual
         )
         return self.feed_forward_residual(

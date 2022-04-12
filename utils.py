@@ -19,7 +19,8 @@ def process_batch(batch, dictionary, tokenizer, annotator,
         dictionary_ext.vocab_size = dictionary.vocab_size
     src = []
     tgt = []
-    src_bert = []
+    src_bart = []
+    tgt_bart = []
     src_ext = [] if use_pgn else None
     tgt_ext = [] if use_pgn else None
     src_ne = [] if use_ner else None
@@ -32,7 +33,8 @@ def process_batch(batch, dictionary, tokenizer, annotator,
         tgt_encode = dictionary.encode(tgt_str, append_bos=True, append_eos=True)
         src.append(torch.tensor(src_encode['ids']))
         tgt.append(torch.tensor(tgt_encode['ids']))
-        src_bert.append(torch.tensor(tokenizer.encode(src_str)[1:]))
+        src_bart.append(torch.tensor(tokenizer.encode(src_str)[1:]))
+        tgt_bart.append(torch.tensor([tokenizer.eos_token_id] + tokenizer.encode(tgt_str)[1:])) # BART use eos token as start token in decoder
         if use_pgn:
             src_ext.append(torch.tensor(
                 dictionary_ext.encode(src_str, append_bos=False, append_eos=True, update=True)['ids']
@@ -50,17 +52,18 @@ def process_batch(batch, dictionary, tokenizer, annotator,
 
     src = pad_sequence(src, padding_value=dictionary.token_to_index(dictionary.pad_token), batch_first=True)
     tgt = pad_sequence(tgt, padding_value=dictionary.token_to_index(dictionary.pad_token), batch_first=True)
-    src_bert = pad_sequence(src_bert, padding_value=tokenizer.pad_token_id, batch_first=True)
+    src_bart = pad_sequence(src_bart, padding_value=tokenizer.pad_token_id, batch_first=True)
+    tgt_bart = pad_sequence(tgt_bart, padding_value=tokenizer.pad_token_id, batch_first=True)
     if use_pgn:
         src_ext = pad_sequence(src_ext, padding_value=dictionary_ext.token_to_index(dictionary_ext.pad_token), batch_first=True)
         tgt_ext = pad_sequence(tgt_ext, padding_value=dictionary_ext.token_to_index(dictionary_ext.pad_token), batch_first=True)
     if use_ner:
         src_ne = pad_sequence(src_ne, padding_value=0, batch_first=True)
-    assert src.size(1) == src_bert.size(1)
+    assert src.size(1) == src_bart.size(1)
     # Truncate if seq_len exceed max_src_length
     if src.size(1) > max_src_len:
         src = src[:,:max_src_len]
-        src_bert = src_bert[:,:max_src_len]
+        src_bart = src_bart[:,:max_src_len]
         if use_pgn:
             src_ext = src_ext[:,:max_src_len]
         if use_ner:
@@ -70,7 +73,8 @@ def process_batch(batch, dictionary, tokenizer, annotator,
         'tgt_raw': tgt_batch,
         'src': src.to(device), 
         'tgt': tgt.to(device), 
-        'src_bert': src_bert.to(device), 
+        'src_bart': src_bart.to(device), 
+        'tgt_bart': tgt_bart.to(device),
         'src_ext': src_ext.to(device) if use_pgn else None,
         'tgt_ext': tgt_ext.to(device) if use_pgn else None,
         'src_ne': src_ne.to(device) if use_ner else None, 
