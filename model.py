@@ -91,7 +91,7 @@ class NMT(pl.LightningModule):
         )
 
         preds = self.model.inference(
-            input['src'], input['src_bart'], input['tgt_bart'][:,:-1], #TODO seperate src_bart to pe_input and pd_input
+            input['src'], input['src_bart'], #TODO seperate src_bart to pe_input and pd_input
             self.dictionary, self.tokenizer,
             input['src_ext'], input['src_ne'], input['max_oov_len'], 
             self.max_tgt_len, self.dictionary.token_to_index(self.dictionary.eos_token)
@@ -249,7 +249,7 @@ class Transformer(nn.Module):
             tgt_padding_mask = tgt.eq(self.padding_idx).unsqueeze(1) if self.padding_idx is not None else None
             tgt_bart = preds[:,1:].detach().clone().to(device='cpu')
             tgt_bart.apply_(lambda x: tokenizer._convert_token_to_id(dictionary.index_to_token(x)))
-            tgt_bart = torch.tensor([self.tokenizer.eos_token_id], device=src.device).repeat(tgt_bart.size(0), 1) + tgt_bart.to(device=src.device)
+            tgt_bart = torch.cat((torch.tensor([tokenizer.eos_token_id], device=src.device).repeat(tgt_bart.size(0), 1), tgt_bart.to(device=src.device)), dim=1)
             pd_out = self.bart(input_ids=src_bart, decoder_input_ids=tgt_bart).last_hidden_state.detach() if self.bart is not None else None
             decoder_out = self.decoder(
                 tgt_embedding, encoder_out, pe_out, pd_out,
