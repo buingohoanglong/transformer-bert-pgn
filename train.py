@@ -51,6 +51,7 @@ def main():
         bert=phobert,
         d_bert=768,
         use_pgn=True,
+        use_non_special_token_mask=True,
         use_ner=True,
         max_src_len=256,
         max_tgt_len=256

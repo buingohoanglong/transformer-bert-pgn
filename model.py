@@ -10,7 +10,7 @@ import re
 from nltk.translate.bleu_score import corpus_bleu
 
 class NMT(pl.LightningModule):
-    def __init__(self, dictionary, tokenizer, annotator, criterion, d_model, d_ff, num_heads, num_layers, dropout, bert=None, d_bert=None, use_pgn=False, use_ner=False, max_src_len=256, max_tgt_len=256):
+    def __init__(self, dictionary, tokenizer, annotator, criterion, d_model, d_ff, num_heads, num_layers, dropout, bert=None, d_bert=None, use_pgn=False, use_non_special_token_mask=False, use_ner=False, max_src_len=256, max_tgt_len=256):
         super(NMT, self).__init__()
         self.dictionary = dictionary
         self.tokenizer = tokenizer
@@ -28,6 +28,7 @@ class NMT(pl.LightningModule):
             padding_idx=self.dictionary.token_to_index(self.dictionary.pad_token), 
             unk_idx=self.dictionary.token_to_index(self.dictionary.unk_token),
             use_pgn=use_pgn,
+            use_non_special_token_mask=use_non_special_token_mask,
             use_ner=use_ner
         )
         self.max_src_len = max_src_len
@@ -137,7 +138,7 @@ class NMT(pl.LightningModule):
 
 class Transformer(nn.Module):
     def __init__(self, vocab_size, d_model, d_ff, num_heads, num_layers, dropout, bert=None, d_bert=None, 
-                padding_idx=None, unk_idx=None, use_pgn=False, use_ner=False):
+                padding_idx=None, unk_idx=None, use_pgn=False, use_non_special_token_mask=False, use_ner=False):
         super(Transformer, self).__init__()
         if bert is None:
             assert d_bert is None
@@ -150,6 +151,7 @@ class Transformer(nn.Module):
         self.padding_idx = padding_idx
         self.unk_idx = unk_idx
         self.use_pgn = use_pgn
+        self.use_non_special_token_mask = use_non_special_token_mask
         self.use_ner = use_ner
         self.pointer_generator = PointerGeneratorNetwork(d_model=d_model, dropout=dropout) if use_pgn else None
 
@@ -179,7 +181,7 @@ class Transformer(nn.Module):
         special_token_mask = self._special_token_mask(
             unk_mask=src.eq(self.unk_idx).unsqueeze(1) if self.unk_idx is not None else None,
             ne_mask=src_ne.unsqueeze(1) if self.use_ner else None
-        )
+        ) if self.use_non_special_token_mask else None
 
         src_embedding = self.src_embedding(src)
         bert_embedding = self.bert(src_bert).last_hidden_state.detach() if self.bert is not None else None
@@ -225,7 +227,7 @@ class Transformer(nn.Module):
         special_token_mask = self._special_token_mask(
             unk_mask=src.eq(self.unk_idx).unsqueeze(1) if self.unk_idx is not None else None,
             ne_mask=src_ne.unsqueeze(1) if self.use_ner else None
-        )
+        ) if self.use_non_special_token_mask else None
 
         src_embedding = self.src_embedding(src)
         bert_embedding = self.bert(src_bert).last_hidden_state.detach() if self.bert is not None else None
